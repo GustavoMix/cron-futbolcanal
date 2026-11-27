@@ -11,10 +11,12 @@ import io
 import json
 import os
 import re
+import shutil
 import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import agenda_ia
@@ -128,3 +130,108 @@ def completar(salida: Path, url_base: str, eventos: list[dict], fijos: list[dict
     print(f"Escudos automáticos: {nuevos} nuevos de {buscados} buscados; "
           f"{max(len(faltan) - buscados, 0)} pendientes; {len(equipos)} en total")
     return [{"nombres": e["nombres"], "url": f"{url_base}escudos/{e['archivo']}"} for e in equipos]
+
+
+# ---------- logos de torneos ----------
+URL_LIGAS = "https://www.thesportsdb.com/api/v1/json/{clave}/all_leagues.php"
+URL_LIGA = "https://www.thesportsdb.com/api/v1/json/{clave}/lookupleague.php?id={id}"
+
+
+def _parecido(nombre: str, otro: str) -> float:
+    """Qué tanto se parecen dos nombres de torneo (0 si no se parecen lo bastante)."""
+    a, b = (agenda_ia.clave_equipo(x).replace(" ", "") for x in (nombre, otro))
+    if not a or not b:
+        return 0.0
+    razon = SequenceMatcher(None, a, b).ratio()
+    if a == b or (min(len(a), len(b)) >= 6 and (a in b or b in a)):
+        return max(razon, 0.9)
+    return razon if razon >= 0.85 else 0.0
+
+
+def buscar_torneo(pedir, clave: str, nombre: str, ligas: list[dict]) -> dict | None:
+    """El torneo que mejor responde al nombre, con su logo, o None."""
+    mejor, puntos = None, 0.0
+    for liga in ligas:
+        nombres = [liga.get("strLeague") or "", *(liga.get("strLeagueAlternate") or "").split(",")]
+        p = max((_parecido(nombre, n.strip()) for n in nombres if n.strip()), default=0.0)
+        if p > puntos:
+            mejor, puntos = liga, p
+    if not mejor:
+        return None
+    datos = (pedir(URL_LIGA.format(clave=clave, id=mejor["idLeague"])).get("leagues") or [{}])[0]
+    for campo in ("strBadge", "strLogo"):
+        logo = datos.get(campo) or ""
+        host = urllib.parse.urlparse(logo).hostname or ""
+        if logo.startswith("https://") and host.endswith("thesportsdb.com"):
+            alternos = [a.strip() for a in (mejor.get("strLeagueAlternate") or "").split(",") if a.strip()]
+            return {"torneo": mejor["strLeague"], "alternos": alternos, "logo": logo}
+    return None
+
+
+def completar_torneos(salida: Path, url_base: str, eventos: list[dict], cfg: dict, pedir=None,
+                      descargar=None, pausa: float | None = None, ahora: datetime | None = None,
+                      fijos: Path = agenda_ia.RAIZ / "escudos") -> list[dict]:
+    """Logos de los torneos de la agenda: los puestos a mano en `escudos/torneos.json` y los buscados solos."""
+    ajustes = cfg.get("escudos", {})
+    manuales = []
+    indice = fijos / "torneos.json"
+    if indice.exists():
+        destino = salida / "escudos"
+        destino.mkdir(parents=True, exist_ok=True)
+        manuales = json.loads(indice.read_text(encoding="utf-8"))
+        for t in manuales:
+            shutil.copyfile(fijos / t["archivo"], destino / t["archivo"])
+    resultado = [{"nombres": t["nombres"], "url": f"{url_base}escudos/{t['archivo']}"} for t in manuales]
+    if not ajustes.get("automaticos", True):
+        return resultado
+    pedir, descargar = pedir or _pedir_json, descargar or _descargar
+    pausa = PAUSA_SEG if pausa is None else pausa
+    clave = os.environ.get("THESPORTSDB_KEY", "").strip() or "3"
+    ahora = ahora or datetime.now(TZ_BO)
+    ruta = salida / "torneos_auto.json"
+    cache = json.loads(ruta.read_text(encoding="utf-8")) if ruta.exists() else {}
+    torneos = [t for t in cache.get("torneos", []) if (salida / "escudos" / t["archivo"]).exists()]
+    sin_logo = cache.get("sin_logo", {})
+
+    def tiene(nombre: str) -> bool:
+        return any(_parecido(nombre, n) for t in [*manuales, *torneos] for n in t["nombres"])
+
+    def reciente(nombre: str) -> bool:
+        visto = sin_logo.get(agenda_ia.clave_equipo(nombre))
+        return bool(visto) and ahora - datetime.fromisoformat(visto) < timedelta(days=REINTENTAR_DIAS)
+
+    faltan = [n for n in sorted({e["competencia"] for e in eventos if e.get("competencia")})
+              if not tiene(n) and not reciente(n)]
+    nuevos = 0
+    if faltan:
+        try:
+            ligas = [l for l in (pedir(URL_LIGAS.format(clave=clave)).get("leagues") or []) if l.get("idLeague")]
+        except Exception as e:
+            print(f"  lista de torneos: {type(e).__name__}: {e}"[:300])
+            ligas = None
+        for i, nombre in enumerate(faltan[:ajustes.get("max_torneos_por_corrida", 8)] if ligas is not None else []):
+            if i:
+                time.sleep(pausa)
+            try:
+                hallado = buscar_torneo(pedir, clave, nombre, ligas)
+                crudo = descargar(hallado["logo"]) if hallado else None
+            except Exception as e:
+                print(f"  logo de {nombre}: {type(e).__name__}: {e}"[:300])
+                break
+            if not hallado:
+                sin_logo[agenda_ia.clave_equipo(nombre)] = ahora.isoformat(timespec="seconds")
+                continue
+            archivo = f"torneo_{_espacio(hallado['torneo'])}.png"
+            try:
+                (salida / "escudos").mkdir(parents=True, exist_ok=True)
+                (salida / "escudos" / archivo).write_bytes(_como_png(crudo))
+            except Exception as e:
+                print(f"  logo de {nombre} ilegible: {type(e).__name__}: {e}"[:300])
+                continue
+            torneos.append({"nombres": list(dict.fromkeys([nombre, hallado["torneo"], *hallado["alternos"][:4]])),
+                            "archivo": archivo})
+            nuevos += 1
+    ruta.write_text(json.dumps({"torneos": torneos, "sin_logo": sin_logo}, ensure_ascii=False, indent=1),
+                    encoding="utf-8")
+    print(f"Logos de torneos: {nuevos} nuevos; {len(torneos)} en total")
+    return resultado + [{"nombres": t["nombres"], "url": f"{url_base}escudos/{t['archivo']}"} for t in torneos]

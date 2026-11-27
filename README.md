@@ -156,6 +156,15 @@ buscan solos en TheSportsDB (clave pública gratuita; opcional `THESPORTSDB_KEY`
 por equipo, y solo se aceptan resultados de fútbol con un nombre parecido. Quedan en `escudos`
 de `feed.json`. Se apagan con `"escudos": {"automaticos": false}` en `paginas.json`.
 
+**Resultados finales:** cuando un afiche da el resultado final, el evento trae `estado`
+("finalizado" o "programado"), `marcador_local` y `marcador_visitante`, y se une al partido
+anunciado ese día. `decidir.py` deja de leer seguido por un partido ya finalizado. No hay
+marcadores en vivo: eso necesita otra fuente de datos.
+
+**Logos de torneos:** `torneos` en `feed.json`, igual que los escudos. Los que pongas a mano
+en `escudos/torneos.json` (mismo formato que `equipos.json`) mandan; los demás se buscan solos
+en TheSportsDB por el nombre de `competencia`, solo si el nombre se parece mucho.
+
 Cada imagen se analiza una sola vez. En `paginas.json`, `ia` fija el modelo, cuántos días
 hacia atrás se miran y cuántas imágenes como máximo por corrida. Si se agota el cupo gratuito,
 lo pendiente se lee en otra corrida. En el plan gratuito Google puede usar lo que se le envía.

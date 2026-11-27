@@ -31,7 +31,8 @@ FALLOS_SEGUIDOS = 3
 
 # Solo se envían a la IA las imágenes que parecen anunciar partidos u horarios.
 CANDIDATA = re.compile(
-    r"\bvs\b|fixture|partid|duelo|jornada|agenda|programaci|horario|\d{1,2}[:h]\d{2}|\bhrs?\b",
+    r"\bvs\b|fixture|partid|duelo|jornada|agenda|programaci|horario|\d{1,2}[:h]\d{2}|\bhrs?\b"
+    r"|resultado|finaliz|\bfinal\b|\bgoles?\b",
     re.I,
 )
 # Los calendarios completos van primero: traen muchos partidos de una sola vez.
@@ -53,6 +54,9 @@ ESQUEMA = _objeto({
         "canal": {"type": "string", "description": "Solo el número de canal de TV, o vacío"},
         "categoria": {"type": "string", "description": "futbol, automovilismo, tenis, basquet, otro"},
         "estadio": {"type": "string", "description": "Estadio o ciudad si el anuncio lo dice, o vacío"},
+        "estado": {"type": "string", "description": "programado, o finalizado si el anuncio da el resultado final"},
+        "marcador_local": {"type": "string", "description": "Goles o puntos del primer equipo si finalizó; si no, vacío"},
+        "marcador_visitante": {"type": "string", "description": "Goles o puntos del segundo equipo si finalizó; si no, vacío"},
     })},
 })
 
@@ -64,7 +68,10 @@ Texto de la publicación, como referencia:
 </publicacion>
 
 En "eventos", anota cada partido o programa que {anuncio} anuncie con un día:
-- Solo lo que todavía se va a jugar o emitir según el anuncio. Los resultados, tablas de
+- Anota lo que todavía se va a jugar o emitir ("estado": "programado", marcadores vacíos) y
+  también un partido ya jugado cuyo resultado FINAL aparece en el anuncio ("estado":
+  "finalizado", con los dos marcadores; la fecha es el día en que se jugó, y la hora puede ir
+  vacía). Un partido en juego o con marcador parcial no es finalizado: omítelo. Las tablas de
   posiciones, designaciones sin horario y promociones comerciales no son eventos.
 - Usa la fecha de la publicación para resolver "hoy", "mañana" o un día de la semana.
 - Si el día no se puede saber con seguridad, omite el evento. Si el día está claro pero no
@@ -237,6 +244,15 @@ def fecha_iso(texto: str, publicado: datetime) -> str:
     return f"{anio + 2000 if anio < 100 else anio:04d}-{mes:02d}-{dia:02d}"
 
 
+def marcador(e: dict) -> dict:
+    """Estado y marcador de un evento; solo vale como finalizado si trae los dos números."""
+    goles = [re.fullmatch(r"\d{1,3}", str(e.get(k) or "").strip()) for k in ("marcador_local", "marcador_visitante")]
+    if str(e.get("estado") or "").strip().lower() == "finalizado" and all(goles):
+        return {"estado": "finalizado", "marcador_local": int(goles[0].group()),
+                "marcador_visitante": int(goles[1].group())}
+    return {"estado": "programado", "marcador_local": None, "marcador_visitante": None}
+
+
 def eventos_del_feed(publicaciones: list[dict]) -> list[dict]:
     """Lista de eventos que lee la aplicación, solo con fechas y horas válidas."""
     lista = []
@@ -268,9 +284,10 @@ def eventos_del_feed(publicaciones: list[dict]) -> list[dict]:
                     "competencia": dato("competencia"), "canal": canal.group() if canal else "",
                     "categoria": dato("categoria").lower(), "estadio": dato("estadio"),
                     "publicado_unix": p["fecha_unix"],
+                    **marcador(e),
                 })
     unicos: list[dict] = []
-    for e in aplicar_cambios_de_hora(completar_con_fixture(lista, publicaciones)):
+    for e in aplicar_cambios_de_hora(completar_con_fixture(aplicar_resultados(lista), publicaciones)):
         # El mismo partido anunciado en el texto, en el afiche o en dos páginas sale una vez.
         previo = next((u for u in unicos if mismo_partido(u, e)), None)
         if previo is None:
@@ -278,6 +295,37 @@ def eventos_del_feed(publicaciones: list[dict]) -> list[dict]:
         else:
             fusionar(previo, e)
     return sorted(unicos, key=lambda e: e["inicio_unix"])
+
+
+def _comparten_equipo(a: dict, b: dict) -> bool:
+    return bool(a["local"] and b["local"]) and any(
+        mismo_equipo(x, y) for x in (a["local"], a["visitante"]) for y in (b["local"], b["visitante"]))
+
+
+def _poner_resultado(destino: dict, final: dict):
+    """Copia el marcador de `final` a `destino`, respetando cuál equipo es local."""
+    if not (mismo_equipo(destino["local"], final["local"]) or mismo_equipo(destino["visitante"], final["visitante"])):
+        final = {**final, "local": final["visitante"], "visitante": final["local"],
+                 "marcador_local": final["marcador_visitante"], "marcador_visitante": final["marcador_local"]}
+    destino.update(estado="finalizado", marcador_local=final["marcador_local"],
+                   marcador_visitante=final["marcador_visitante"])
+    for lado in ("local", "visitante"):
+        destino[lado] = max(destino[lado], final[lado], key=len)
+    destino["titulo"] = f"{destino['local']} vs {destino['visitante']}"
+
+
+def aplicar_resultados(eventos: list[dict]) -> list[dict]:
+    """El resultado final se une al partido anunciado ese día; sin partido, queda como evento."""
+    finales = [e for e in eventos if e["estado"] == "finalizado" and e["local"]]
+    otros = [e for e in eventos if e["estado"] != "finalizado" or not e["local"]]
+    for final in finales:
+        partido = next((o for o in otros if o["fecha"][:10] == final["fecha"][:10]
+                        and o["hora_confirmada"] and _comparten_equipo(o, final)), None)
+        if partido:
+            _poner_resultado(partido, final)
+        else:
+            otros.append(final)
+    return otros
 
 
 def aplicar_cambios_de_hora(eventos: list[dict]) -> list[dict]:
@@ -327,6 +375,8 @@ def fusionar(previo: dict, otro: dict):
         for lado in ("local", "visitante"):
             previo[lado] = max(previo[lado], otro[lado], key=len)
         previo["titulo"] = f"{previo['local']} vs {previo['visitante']}"
+    if otro["estado"] == "finalizado" and previo["estado"] != "finalizado" and previo["local"]:
+        _poner_resultado(previo, otro)
     for campo in ("canal", "competencia", "estadio", "categoria"):
         previo[campo] = previo[campo] or otro[campo]
 

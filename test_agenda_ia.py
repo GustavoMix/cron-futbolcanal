@@ -178,6 +178,34 @@ class TextoYVideos(Base):
         self.assertEqual((e["categoria"], e["estadio"]), ("futbol", "Hernando Siles"))
 
 
+    def resultado(self, local, visitante, a, b, **extra):
+        return {**evento(hora="", local=local, visitante=visitante), "estado": "finalizado",
+                "marcador_local": a, "marcador_visitante": b, **extra}
+
+    def test_el_resultado_final_se_une_al_partido_anunciado(self):
+        fixture, final = self.pub(id="f", dia=26), self.pub(id="r", dia=29)
+        fixture["imagenes"][0]["ia_eventos"] = [evento(local="Bolívar", visitante="Always Ready")]
+        # el afiche del resultado trae los equipos al revés y un nombre abreviado
+        final["imagenes"][0]["ia_eventos"] = [self.resultado("Always Ready", "Bolivar", "0", "2")]
+        [e] = ia.eventos_del_feed([fixture, final])
+        self.assertEqual((e["estado"], e["marcador_local"], e["marcador_visitante"]), ("finalizado", 2, 0))
+        self.assertTrue(e["hora_confirmada"])
+        self.assertEqual(e["fecha"][11:16], "17:15")
+
+    def test_resultado_sin_partido_anunciado_queda_solo(self):
+        final = self.pub(id="r", dia=29)
+        final["imagenes"][0]["ia_eventos"] = [self.resultado("Aurora", "Blooming", "1", "1")]
+        [e] = ia.eventos_del_feed([final])
+        self.assertEqual((e["estado"], e["marcador_local"]), ("finalizado", 1))
+        self.assertFalse(e["hora_confirmada"])
+
+    def test_marcador_incompleto_no_cuenta_como_finalizado(self):
+        p = self.pub()
+        p["imagenes"][0]["ia_eventos"] = [self.resultado("Aurora", "Blooming", "1", "")]
+        [e] = ia.eventos_del_feed([p])
+        self.assertEqual((e["estado"], e["marcador_local"]), ("programado", None))
+
+
 class Escudos(Base):
     def test_nombres(self):
         self.assertEqual(ia.clave_equipo("CDT. Real Oruro"), "real oruro")

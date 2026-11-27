@@ -82,5 +82,47 @@ class Escudos(unittest.TestCase):
         self.assertEqual(self.correr([partido("Real Betis", "")], resp), [])
 
 
+class Torneos(unittest.TestCase):
+    LIGAS = {"leagues": [
+        {"idLeague": "1", "strLeague": "Spanish La Liga", "strLeagueAlternate": "LaLiga, Primera División"},
+        {"idLeague": "2", "strLeague": "English Premier League", "strLeagueAlternate": "EPL"}]}
+    DETALLE = {"leagues": [{"strBadge": "https://r2.thesportsdb.com/laliga.png"}]}
+
+    def setUp(self):
+        carpeta = tempfile.TemporaryDirectory()
+        self.addCleanup(carpeta.cleanup)
+        self.salida = Path(carpeta.name)
+        self.pedidos = []
+
+    def correr(self, competencias, detalle=None):
+        def pedir(url):
+            self.pedidos.append(url)
+            return self.LIGAS if "all_leagues" in url else (detalle or self.DETALLE)
+        eventos = [{"competencia": c} for c in competencias]
+        return ea.completar_torneos(self.salida, "https://x/datos/", eventos, {}, pedir=pedir,
+                                    descargar=lambda u: png(), pausa=0, ahora=AHORA, fijos=self.salida / "nada")
+
+    def test_encuentra_el_logo_y_no_repite(self):
+        [t] = self.correr(["LaLiga"])
+        self.assertEqual(t["url"], "https://x/datos/escudos/torneo_spanish-la-liga.png")
+        self.correr(["LaLiga"])
+        self.assertEqual(len(self.pedidos), 2)  # lista + detalle, solo la primera vez
+
+    def test_un_nombre_demasiado_generico_no_se_adivina(self):
+        self.assertEqual(self.correr(["Liga"]), [])
+
+    def test_logo_de_otro_sitio_se_rechaza(self):
+        self.assertEqual(self.correr(["LaLiga"], {"leagues": [{"strBadge": "https://malo.example.com/x.png"}]}), [])
+
+    def test_los_logos_a_mano_mandan(self):
+        fijos = self.salida / "fijos"
+        fijos.mkdir()
+        (fijos / "champions.png").write_bytes(png())
+        (fijos / "torneos.json").write_text(json.dumps([{"archivo": "champions.png", "nombres": ["Champions League"]}]))
+        lista = ea.completar_torneos(self.salida, "https://x/", [{"competencia": "UEFA Champions League"}], {},
+                                     pedir=lambda u: self.fail("no debe buscar"), pausa=0, fijos=fijos)
+        self.assertEqual(lista[0]["url"], "https://x/escudos/champions.png")
+
+
 if __name__ == "__main__":
     unittest.main()

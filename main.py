@@ -365,6 +365,11 @@ def main() -> int:
         escudos += escudos_auto.completar(salida, URL_BASE, eventos, escudos, cfg)
     except Exception as e:
         print(f"Escudos automáticos fallaron: {type(e).__name__}: {e}"[:300])
+    try:
+        torneos = escudos_auto.completar_torneos(salida, URL_BASE, eventos, cfg)
+    except Exception as e:
+        torneos = []
+        print(f"Logos de torneos fallaron: {type(e).__name__}: {e}"[:300])
     plan = ritmo_ia.planear(publicaciones, eventos, cfg)
     print(f"Agenda de afiches: {len(eventos)} eventos; escudos: {len(escudos)}")
     guardar_json(salida / "feed.json", {
@@ -375,6 +380,7 @@ def main() -> int:
         "publicaciones": publicaciones,
         "eventos": eventos,
         "escudos": escudos,
+        "torneos": torneos,
         "plan": plan,
     })
     guardar_json(salida / "estado.json", {"fotos_abiertas": sorted(abiertas, key=int)[-1000:]})

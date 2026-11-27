@@ -120,7 +120,7 @@ def decidir(feed: dict, ahora: datetime) -> tuple[bool, str]:
         pass
     anunciadas = [inicio for p in publicaciones for inicio in horas_anunciadas(p)]
     # Las que la IA leyó dentro de los afiches.
-    anunciadas += [datetime.fromtimestamp(e["inicio_unix"], TZ_BO) for e in feed.get("eventos", []) if e.get("hora_confirmada", True)]
+    anunciadas += [datetime.fromtimestamp(e["inicio_unix"], TZ_BO) for e in feed.get("eventos", []) if e.get("hora_confirmada", True) and e.get("estado") != "finalizado"]
     partidos = sorted({
         inicio for inicio in anunciadas
         if inicio - ANTES_DEL_PARTIDO <= ahora <= inicio + DESPUES_DEL_PARTIDO

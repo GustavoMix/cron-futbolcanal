@@ -305,15 +305,19 @@ class Navegador:
         else:
             raise RuntimeError("No se pudo abrir ningún navegador: " + " | ".join(errores))
 
-    def visitar(self, rec: Recolector, url: str, scrolls: int = 5) -> int:
+    def visitar(self, rec: Recolector, url: str, scrolls: int = 5, espera: int = 3500) -> int:
         """Abre una URL, la recorre y entrega los datos al recolector. Devuelve bytes leídos."""
         ctx = self.browser.new_context(locale="es-BO", viewport={"width": 1280, "height": 1800})
         try:
             page = ctx.new_page()
+            # Solo interesan los datos: no bajar imágenes, videos ni fuentes ahorra mucho tiempo.
+            page.route("**/*", lambda ruta: ruta.abort()
+                       if ruta.request.resource_type in ("image", "media", "font")
+                       else ruta.continue_())
             respuestas = []
             page.on("response", lambda r: respuestas.append(r) if "/api/graphql" in r.url else None)
             page.goto(url, wait_until="commit", timeout=45000)
-            page.wait_for_timeout(5000)
+            page.wait_for_timeout(espera)
             # El aviso de "inicia sesión" tapa la página y frena el scroll.
             for nombre in ("Rechazar cookies opcionales", "Decline optional cookies", "Cerrar", "Close"):
                 try:
@@ -322,14 +326,18 @@ class Navegador:
                     pass
             for _ in range(scrolls):
                 page.mouse.wheel(0, 2500)
-                page.wait_for_timeout(1000)
+                page.wait_for_timeout(800)
             cuerpos = []
             for r in respuestas:
                 try:
                     cuerpos.append(r.text())
                 except Exception:
                     pass
-            html = page.content()
+            try:
+                html = page.content()
+            except Exception:  # a veces la página justo está recargando
+                page.wait_for_timeout(2000)
+                html = page.content()
             rec.leer(html, cuerpos)
             return len(html)
         finally:

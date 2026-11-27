@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -68,6 +69,7 @@ def ocr(ruta: Path) -> str:
         r = subprocess.run(
             [TESSERACT, str(ruta), "stdout", "-l", "spa", "--psm", "3"],
             capture_output=True, timeout=60, check=True,
+            env={**os.environ, "OMP_THREAD_LIMIT": "1"},  # un hilo por imagen; se paraleliza fuera
         )
     except (subprocess.SubprocessError, OSError) as e:
         print(f"    OCR falló: {e}"[:200])
@@ -99,7 +101,7 @@ def imagen_local(url: str | None, relativa: str, salida: Path, con_ocr: bool = T
         "url_original": url,
         "ancho": tam[0],
         "alto": tam[1],
-        "texto_ocr": ocr(destino) if con_ocr else "",
+        "texto_ocr": None if con_ocr else "",  # None = pendiente, ver leer_textos
     }
 
 
@@ -188,42 +190,63 @@ def armar(pieza: dict, rec: Recolector, fuente: str, salida: Path, previa: dict 
 
 def procesar_pagina(nav: Navegador, cfg: dict, pag: dict, salida: Path,
                     guardadas: dict, abiertas: set, corte: float) -> dict:
+    def log(mensaje):
+        print(f"[{pag['id']}] {mensaje.strip()}", flush=True)
+
     rec = Recolector()
     base = pag["url"].rstrip("/")
     errores = []
     for seccion in ("", "/videos", "/reels", "/photos"):
         try:
-            tam = nav.visitar(rec, base + seccion, scrolls=6 if seccion else 4)
-            print(f"  {seccion or '/'} leído ({tam // 1024} KB)")
+            tam = nav.visitar(rec, base + seccion, scrolls=4 if seccion else 3)
+            log(f"  {seccion or '/'} leído ({tam // 1024} KB)")
         except Exception as e:
             errores.append(f"{seccion or '/'}: {type(e).__name__}: {e}"[:200])
-            print("  ERROR " + errores[-1])
+            log("  ERROR " + errores[-1])
 
-    # Sin sesión la portada muestra muy pocas publicaciones. Abrir cada foto nueva
-    # entrega su publicación completa (texto, fecha y enlace).
-    conocidas = {i["id"] for p in guardadas.values() for i in p.get("imagenes", [])}
+    # Sin sesión la portada muestra muy pocas publicaciones. /posts/<id de foto> entrega
+    # la publicación completa de cada foto, también desde los servidores de GitHub
+    # (donde /photo/?fbid= pide iniciar sesión).
+    conocidas = {i["id"] for p in guardadas.values() for i in p.get("imagenes", [])} | abiertas
     cubiertas = {f for p in rec.publicaciones() if p.get("texto") for f in p["fotos"]}
-    pendientes = [f for f in rec.orden_fotos if f not in conocidas | cubiertas | abiertas]
-    limite = cfg.get("max_fotos_a_abrir_por_pagina", 15)
-    abiertas_ahora = 0
-    antiguas = 0
-    for fid in pendientes:
-        if abiertas_ahora >= limite or antiguas >= 3:
-            break
-        if any(fid in p["fotos"] and p.get("texto") for p in rec.publicaciones()):
-            continue  # llegó junto con una foto vecina
-        try:
-            nav.visitar(rec, f"https://www.facebook.com/photo/?fbid={fid}", scrolls=0)
-        except Exception as e:
-            print(f"  foto {fid}: {type(e).__name__}: {e}"[:200])
+    cola = [f for f in rec.orden_fotos if f not in conocidas | cubiertas]
+    # Si ninguna foto de la pestaña es conocida, puede haber más atrás sin leer.
+    hay_hueco = not any(f in conocidas for f in rec.orden_fotos)
+    vistas = set(rec.orden_fotos)
+    limite = cfg.get("max_fotos_a_abrir_por_pagina", 30)
+    abiertas_ahora = antiguas = 0
+    ultima = rec.orden_fotos[-1] if rec.orden_fotos else None
+    while abiertas_ahora < limite and antiguas < 3:
+        if not cola:
+            if not (hay_hueco and ultima):
+                break
+            # La vista /photos/<id> muestra las fotos vecinas: así se sigue hacia atrás.
+            try:
+                nav.visitar(rec, f"{base}/photos/{ultima}", scrolls=0, espera=2500)
+            except Exception as e:
+                log(f"  vecinas de {ultima}: {type(e).__name__}: {e}"[:200])
+                break
+            cola = [f for f in rec.fotos if f not in vistas | conocidas]
+            vistas.update(cola)
+            ultima = None
             continue
-        abiertas_ahora += 1
-        suyas = [p for p in rec.publicaciones() if fid in p["fotos"]]
+        fid = cola.pop(0)
+        vistas.add(fid)
+        suyas = [p for p in rec.publicaciones() if fid in p["fotos"] and p.get("texto")]
+        if not suyas:
+            try:
+                nav.visitar(rec, f"{base}/posts/{fid}", scrolls=0, espera=1500)
+            except Exception as e:
+                log(f"  foto {fid}: {type(e).__name__}: {e}"[:200])
+                continue
+            abiertas_ahora += 1
+            suyas = [p for p in rec.publicaciones() if fid in p["fotos"]]
+            time.sleep(0.5)
         if suyas:
             abiertas.add(fid)
             antiguas = antiguas + 1 if suyas[0]["fecha_unix"] < corte else 0
-        time.sleep(1.5)
-    print(f"  fotos abiertas: {abiertas_ahora}")
+            ultima = fid
+    log(f"  fotos abiertas: {abiertas_ahora}")
 
     nuevas = recibidas = 0
     for pieza in rec.publicaciones():
@@ -238,7 +261,7 @@ def procesar_pagina(nav: Navegador, cfg: dict, pag: dict, salida: Path,
     perfil = imagen_local(info.get("foto_perfil"), f"media/{pag['id']}/perfil.jpg", salida, False)
     portada = imagen_local(info.get("portada"), f"media/{pag['id']}/portada.jpg", salida, False)
     ok = recibidas > 0
-    print(f"  publicaciones: {recibidas} (nuevas: {nuevas})")
+    log(f"  publicaciones: {recibidas} (nuevas: {nuevas})")
     return {
         "ok": ok,
         "nombre": info.get("nombre") or pag["nombre"],
@@ -249,6 +272,19 @@ def procesar_pagina(nav: Navegador, cfg: dict, pag: dict, salida: Path,
         "nuevas": nuevas,
         "error": None if ok else (" | ".join(errores) or "Facebook no entregó publicaciones (posible bloqueo)"),
     }
+
+
+def leer_textos(salida: Path, publicaciones: list[dict]):
+    """Aplica OCR, varias imágenes a la vez, a las que todavía no se leyeron."""
+    pendientes = []
+    for p in publicaciones:
+        mini = (p.get("video") or {}).get("miniatura")
+        pendientes += [i for i in p["imagenes"] + ([mini] if mini else []) if i.get("texto_ocr") is None]
+    with ThreadPoolExecutor(max_workers=os.cpu_count() or 2) as hilos:
+        textos = hilos.map(lambda i: ocr(salida / i["archivo"]), pendientes)
+        for imagen, texto in zip(pendientes, textos):
+            imagen["texto_ocr"] = texto
+    print(f"Texto leído en {len(pendientes)} imágenes")
 
 
 def limpiar_media(salida: Path, publicaciones: list[dict]):
@@ -281,29 +317,42 @@ def main() -> int:
     if not TESSERACT:
         print("Aviso: tesseract no está instalado; texto_ocr quedará vacío.")
 
+    def leer_fuente(pag):
+        """Lee una página con su propio navegador y sus propias copias (corre en un hilo)."""
+        previa = fuentes_previas.get(pag["id"], {})
+        suyas = {k: p for k, p in guardadas.items() if p["fuente"] == pag["id"]}
+        vistas = set(abiertas)
+        try:
+            with sync_playwright() as pw:
+                nav = Navegador(pw)
+                try:
+                    r = procesar_pagina(nav, cfg, pag, salida, suyas, vistas, corte)
+                finally:
+                    nav.cerrar()
+        except Exception as e:
+            print(f"[{pag['id']}] ERROR {type(e).__name__}: {e}")
+            r = {"ok": False, "nombre": pag["nombre"], "error": f"{type(e).__name__}: {e}"[:300],
+                 "publicaciones_leidas": 0, "nuevas": 0}
+        # Un fallo pasajero no borra lo que ya se sabía de la página.
+        for k in ("seguidores", "foto_perfil", "portada"):
+            r[k] = r.get(k) or previa.get(k)
+        r["ultima_vez_ok"] = iso() if r["ok"] else previa.get("ultima_vez_ok")
+        return {"id": pag["id"], "url": pag["url"], **r}, suyas, vistas
+
+    # Las páginas se leen en paralelo, de a dos como máximo.
+    with ThreadPoolExecutor(max_workers=2) as hilos:
+        resultados = list(hilos.map(leer_fuente, cfg["paginas"]))
     fuentes = []
-    with sync_playwright() as pw:
-        nav = Navegador(pw)
-        for pag in cfg["paginas"]:
-            print(f"== {pag['nombre']}")
-            previa = fuentes_previas.get(pag["id"], {})
-            try:
-                r = procesar_pagina(nav, cfg, pag, salida, guardadas, abiertas, corte)
-            except Exception as e:
-                print(f"  ERROR {type(e).__name__}: {e}")
-                r = {"ok": False, "nombre": pag["nombre"], "error": f"{type(e).__name__}: {e}"[:300],
-                     "publicaciones_leidas": 0, "nuevas": 0}
-            # Un fallo pasajero no borra lo que ya se sabía de la página.
-            for k in ("seguidores", "foto_perfil", "portada"):
-                r[k] = r.get(k) or previa.get(k)
-            r["ultima_vez_ok"] = iso() if r["ok"] else previa.get("ultima_vez_ok")
-            fuentes.append({"id": pag["id"], "url": pag["url"], **r})
-        nav.cerrar()
+    for fuente, suyas, vistas in resultados:
+        fuentes.append(fuente)
+        guardadas.update(suyas)
+        abiertas |= vistas
 
     publicaciones = sorted(
         (p for p in guardadas.values() if p["fecha_unix"] >= corte),
         key=lambda p: p["fecha_unix"], reverse=True,
     )[: cfg.get("max_publicaciones", 400)]
+    leer_textos(salida, publicaciones)
     limpiar_media(salida, publicaciones)
     guardar_json(salida / "feed.json", {
         "version": 1,

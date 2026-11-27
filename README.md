@@ -129,20 +129,21 @@ suspend fun cargarFeed(): Feed = withContext(Dispatchers.IO) {
 ## Partidos de los afiches y escudos
 
 Muchos horarios vienen solo dentro de la imagen. `agenda_ia.py` envía los afiches recientes
-a Claude, que devuelve equipos, fecha y hora. El resultado sale en `feed.json`:
+a Gemini (plan gratuito de Google), que devuelve equipos, fecha y hora. El resultado sale en
+`feed.json`:
 
-- `eventos`: `publicacion`, `fuente`, `inicio_unix`, `fecha`, `hora_confirmada` (falso si el afiche solo dice el día), `titulo`, `local`, `visitante`,
-  `competencia`, `canal`. La IA puede equivocarse; la publicación original sirve para comprobar.
-- `escudos`: `nombres` y `url` de cada equipo. Los de la carpeta `escudos/` son fijos; los
-  equipos nuevos se recortan del afiche la primera vez y quedan en la rama `datos`.
+- `eventos`: `publicacion`, `fuente`, `inicio_unix`, `fecha`, `hora_confirmada` (falso si el
+  afiche solo dice el día), `titulo`, `local`, `visitante`, `competencia`, `canal`. La IA puede
+  equivocarse; la publicación original sirve para comprobar.
+- `escudos`: `nombres` y `url` de cada equipo que haya en la carpeta `escudos/`.
 
-Para encender la IA, crea una clave en la consola de Anthropic y guárdala en GitHub como
-secreto `ANTHROPIC_API_KEY` (Settings, Secrets and variables, Actions). Sin la clave todo
-lo demás funciona igual.
+Para encender la IA, crea una clave en https://aistudio.google.com/apikey (sin activar la
+facturación) y guárdala en GitHub como secreto `GEMINI_API_KEY` (Settings, Secrets and
+variables, Actions). Sin la clave todo lo demás funciona igual.
 
 Cada imagen se analiza una sola vez. En `paginas.json`, `ia` fija el modelo, cuántos días
-hacia atrás se miran y cuántas imágenes como máximo por corrida. Tiene un costo por imagen:
-`claude-haiku-5-5` es mucho más barato que `claude-opus-5-5`, con más riesgo de errores.
+hacia atrás se miran y cuántas imágenes como máximo por corrida. Si se agota el cupo gratuito,
+lo pendiente se lee en otra corrida. En el plan gratuito Google puede usar lo que se le envía.
 
 ## Configuración
 

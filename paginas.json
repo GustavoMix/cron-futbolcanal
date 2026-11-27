@@ -2,7 +2,7 @@
   "dias_historial": 30,
   "max_publicaciones": 400,
   "max_fotos_a_abrir_por_pagina": 30,
-  "ia": { "modelo": "claude-opus-5-5", "dias": 7, "max_imagenes_por_corrida": 15 },
+  "ia": { "modelo": "gemini-3.5-flash-lite", "dias": 7, "max_imagenes_por_corrida": 20 },
   "paginas": [
     { "id": "futbolcanal", "nombre": "FutbolCanal", "url": "https://www.facebook.com/FutbolCanal" },
     { "id": "entelgol", "nombre": "Entel Gol", "url": "https://www.facebook.com/entelgol" }

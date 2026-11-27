@@ -1,12 +1,11 @@
-"""Pruebas sin llamar a la IA: se usa un cliente falso."""
+"""Pruebas sin llamar a la IA: se usan respuestas falsas."""
+import io
 import json
 import tempfile
 import unittest
+import urllib.error
 from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace as N
-
-from PIL import Image, ImageDraw
 
 import agenda_ia as ia
 
@@ -20,18 +19,17 @@ def evento(fecha="2026-11-29", hora="17:15", local="Bolívar", visitante="Always
             "titulo": "", "competencia": "Liga", "canal": ""}
 
 
-class ClienteFalso:
-    def __init__(self, datos=None, error=None, motivo="end_turn"):
-        self.pedidos, self.datos, self.error, self.motivo = [], datos, error, motivo
-        self.messages = N(create=self._crear)
-        self.beta = N(messages=N(create=self._crear))
+class Falso:
+    def __init__(self, eventos=(), error=None, respuesta=None):
+        self.pedidos, self.error = [], error
+        self.respuesta = respuesta or {"status": "completed", "outputs": [
+            {"type": "text", "text": json.dumps({"eventos": list(eventos)})}]}
 
-    def _crear(self, **pedido):
-        self.pedidos.append(pedido)
+    def __call__(self, cuerpo):
+        self.pedidos.append(cuerpo)
         if self.error:
             raise self.error
-        return N(stop_reason=self.motivo, usage=N(input_tokens=10, output_tokens=5),
-                 content=[N(type="text", text=json.dumps(self.datos))])
+        return self.respuesta
 
 
 class Base(unittest.TestCase):
@@ -39,50 +37,64 @@ class Base(unittest.TestCase):
         carpeta = tempfile.TemporaryDirectory()
         self.addCleanup(carpeta.cleanup)
         self.salida = Path(carpeta.name)
-        afiche = Image.new("RGB", (600, 600), (80, 30, 140))
-        ImageDraw.Draw(afiche).ellipse((100, 100, 220, 220), fill=(250, 210, 0))
         (self.salida / "media").mkdir()
-        afiche.save(self.salida / "media" / "a.jpg")
+        (self.salida / "media" / "a.jpg").write_bytes(b"imagen")
 
-    def pub(self, texto="Fixture de la fecha", dia=26):
-        return {"id": "p1", "fuente": "entelgol", "texto": texto, "fecha_unix": int(bo(dia, 1).timestamp()),
-                "imagenes": [{"archivo": "media/a.jpg", "texto_ocr": ""}]}
+    def pub(self, texto="Fixture de la fecha", dia=26, id="p1", imagenes=1):
+        return {"id": id, "fuente": "entelgol", "texto": texto, "fecha_unix": int(bo(dia, 1).timestamp()),
+                "imagenes": [{"archivo": "media/a.jpg", "texto_ocr": ""} for _ in range(imagenes)]}
 
-    def leer(self, cliente, publicaciones):
-        ia.leer_afiches(self.salida, publicaciones, {}, cliente=cliente, ahora=bo(27, 15).timestamp())
+    def leer(self, falso, publicaciones):
+        ia.leer_afiches(self.salida, publicaciones, {"ia": {"pausa_seg": 0}}, pedir=falso,
+                        ahora=bo(27, 15).timestamp())
 
 
 class Afiches(Base):
     def test_guarda_eventos_y_no_repite(self):
         p = self.pub()
-        cliente = ClienteFalso({"eventos": [evento()], "escudos": []})
-        self.leer(cliente, [p])
-        self.leer(cliente, [p])
-        self.assertEqual(len(cliente.pedidos), 1)
+        falso = Falso([evento()])
+        self.leer(falso, [p])
+        self.leer(falso, [p])
+        self.assertEqual(len(falso.pedidos), 1)
         [e] = ia.eventos_del_feed([p])
         self.assertEqual(e["titulo"], "Bolívar vs Always Ready")
         self.assertEqual(e["inicio_unix"], int(bo(29, 17, 15).timestamp()))
 
     def test_salta_imagenes_viejas_o_sin_anuncio(self):
-        cliente = ClienteFalso({"eventos": [], "escudos": []})
-        self.leer(cliente, [self.pub(dia=1), self.pub(texto="Feliz día a todos")])
-        self.assertEqual(cliente.pedidos, [])
+        falso = Falso()
+        self.leer(falso, [self.pub(dia=1), self.pub(texto="Feliz día a todos")])
+        self.assertEqual(falso.pedidos, [])
 
     def test_los_calendarios_van_primero(self):
-        suelto = {**self.pub(texto="Partido hoy 19:00", dia=27), "id": "nuevo"}
-        calendario = {**self.pub(texto="Fixture de la fecha", dia=25), "id": "calendario"}
+        suelto = self.pub(texto="Partido hoy 19:00", dia=27, id="nuevo")
+        calendario = self.pub(dia=25, id="calendario")
         cola = ia.pendientes([suelto, calendario], bo(27, 15).timestamp(), 7)
         self.assertEqual([p["id"] for p, _ in cola], ["calendario", "nuevo"])
 
-    def test_si_falla_queda_pendiente(self):
-        p = self.pub()
-        self.leer(ClienteFalso(error=ConnectionError("sin red")), [p])
-        self.assertNotIn("ia_eventos", p["imagenes"][0])
+    def test_si_falla_o_no_se_entiende_queda_pendiente(self):
+        for falso in (Falso(error=ConnectionError("sin red")), Falso(respuesta={"status": "failed"})):
+            p = self.pub()
+            self.leer(falso, [p])
+            self.assertNotIn("ia_eventos", p["imagenes"][0])
 
-    def test_si_declina_no_se_vuelve_a_pagar(self):
+    def test_con_el_cupo_agotado_se_detiene(self):
+        error = urllib.error.HTTPError("u", 429, "cupo", {}, io.BytesIO())
+        falso = Falso(error=error)
+        self.leer(falso, [self.pub(imagenes=5)])
+        self.assertEqual(len(falso.pedidos), 1)
+
+    def test_tras_tres_fallos_seguidos_se_detiene(self):
+        falso = Falso(error=ConnectionError("sin red"))
+        self.leer(falso, [self.pub(imagenes=5)])
+        self.assertEqual(len(falso.pedidos), 3)
+
+    def test_formatos_de_fecha_y_canal(self):
         p = self.pub()
-        self.leer(ClienteFalso(motivo="refusal"), [p])
-        self.assertEqual(p["imagenes"][0]["ia_eventos"], [])
+        p["imagenes"][0]["ia_eventos"] = [{**evento(fecha="29/11/26"), "canal": "Canal 61"},
+                                          evento(fecha="28/11", local="Aurora", visitante="Blooming")]
+        eventos = ia.eventos_del_feed([p])
+        self.assertEqual([e["fecha"][:10] for e in eventos], ["2026-11-28", "2026-11-29"])
+        self.assertEqual(eventos[1]["canal"], "61")
 
     def test_con_dia_pero_sin_hora(self):
         p = self.pub()
@@ -92,12 +104,12 @@ class Afiches(Base):
         self.assertEqual(e["inicio_unix"], int(bo(29).timestamp()))
 
     def test_la_hora_sale_del_fixture(self):
-        fixture = {**self.pub(), "id": "fixture"}
-        fixture["imagenes"] = [{"archivo": "media/a.jpg", "ia_eventos": [evento()]}]
-        programa = {**self.pub(texto="¿Bolívar vs Always Ready, la final adelantada?"), "id": "programa"}
+        fixture = self.pub(id="fixture")
+        fixture["imagenes"][0]["ia_eventos"] = [evento()]
+        programa = self.pub(texto="¿Bolívar vs Always Ready, la final adelantada?", id="programa")
         analisis = {**evento(hora="", local="", visitante=""), "titulo": "Galácticos: Bolívar vs Always Ready"}
-        otro = {**evento(hora="", local="Aurora", visitante="The Strongest")}
-        programa["imagenes"] = [{"archivo": "media/a.jpg", "ia_eventos": [analisis, otro]}]
+        otro = evento(hora="", local="Aurora", visitante="The Strongest")
+        programa["imagenes"][0]["ia_eventos"] = [analisis, otro]
         titulos = [(e["titulo"], e["hora_confirmada"]) for e in ia.eventos_del_feed([fixture, programa])]
         self.assertEqual(titulos, [("Aurora vs The Strongest", False), ("Bolívar vs Always Ready", True)])
 
@@ -113,34 +125,17 @@ class Escudos(Base):
         self.assertEqual(ia.clave_equipo("CDT. Real Oruro"), "real oruro")
         self.assertEqual(ia.clave_equipo("A.B.B."), "abb")
 
-    def test_equipo_nuevo_se_recorta_una_vez(self):
-        escudos = [{"equipo": "Equipo Nuevo", "caja": [100, 100, 221, 221]},
-                   {"equipo": "Bolívar", "caja": [100, 100, 221, 221]},
-                   {"equipo": "Caja Mala", "caja": [500, 500, 900, 900]}]
-        imagen = self.salida / "media" / "a.jpg"
-        fijos = self.carpeta_fija()
-        ia.guardar_escudos_nuevos(self.salida, imagen, escudos, fijos)
-        ia.guardar_escudos_nuevos(self.salida, imagen, escudos, fijos)
-        guardados = json.loads((self.salida / "escudos" / "ia.json").read_text(encoding="utf-8"))
-        self.assertEqual([e["nombres"] for e in guardados], [["Equipo Nuevo"]])
-        with Image.open(self.salida / "escudos" / guardados[0]["archivo"]) as png:
-            self.assertEqual(png.mode, "RGBA")
-            self.assertEqual(png.getpixel((0, 0))[3], 0)  # el fondo quedó transparente
-
-    def carpeta_fija(self) -> Path:
+    def test_publica_los_guardados(self):
         fijos = self.salida / "fijos"
-        fijos.mkdir(exist_ok=True)
-        Image.new("RGBA", (10, 10)).save(fijos / "bolivar.png")
+        fijos.mkdir()
+        (fijos / "bolivar.png").write_bytes(b"png")
         (fijos / "equipos.json").write_text(
             json.dumps([{"archivo": "bolivar.png", "nombres": ["Bolívar"]}]), encoding="utf-8")
-        return fijos
-
-    def test_publica_los_fijos(self):
-        [bolivar] = ia.publicar_escudos(self.salida, "https://x/datos/", self.carpeta_fija())
+        [bolivar] = ia.publicar_escudos(self.salida, "https://x/datos/", fijos)
         self.assertEqual(bolivar["url"], "https://x/datos/escudos/bolivar.png")
         self.assertTrue((self.salida / "escudos" / "bolivar.png").exists())
 
-    def test_sin_escudos_fijos_no_falla(self):
+    def test_sin_escudos_no_falla(self):
         self.assertEqual(ia.publicar_escudos(self.salida, "https://x/", self.salida / "no-existe"), [])
 
 

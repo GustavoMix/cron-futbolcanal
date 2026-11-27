@@ -5,17 +5,16 @@ No toca el cron ni los datos. Se ejecuta desde el workflow "Probar Ollama".
 from __future__ import annotations
 
 import base64
-import io
 import json
 import os
 import sys
+import tempfile
 import time
 import urllib.request
 from datetime import datetime
+from pathlib import Path
 
-from PIL import Image
-
-from agenda_ia import ESQUEMA, INSTRUCCIONES, clave_equipo
+from agenda_ia import ESQUEMA, INSTRUCCIONES, analizar, clave_equipo, fecha_iso, pedir_a_gemini, TZ_BO
 
 MODELO = os.environ.get("MODELO", "qwen3-vl:4b")
 MEDIA = "https://raw.githubusercontent.com/GustavoMix/cron-futbolcanal/datos/media/"
@@ -44,7 +43,7 @@ AFICHES = {
         "reales": [
             ("2026-11-27", "16:00", "Levante", "Racing"),
             ("2026-11-28", "09:00", "Betis", "Vallecano"),
-            ("2026-11-28", "11:15", "Málaga", "Club"),
+            ("2026-11-28", "11:15", "Málaga", "Ath"),
             ("2026-11-28", "13:30", "Elche", "Madrid"),
             ("2026-11-28", "16:00", "Real Madrid", "Alavés"),
             ("2026-11-29", "09:00", "Valencia", "Osasuna"),
@@ -67,12 +66,15 @@ def leer(afiche: dict) -> list[dict]:
     pedido = urllib.request.Request(afiche["url"], headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(pedido, timeout=60) as r:
         imagen = r.read()
-    ancho, alto = Image.open(io.BytesIO(imagen)).size
-    publicado = datetime.strptime(afiche["publicado"], "%Y-%m-%d %H:%M")
-    esquema = {"type": "object", "properties": {"eventos": ESQUEMA["properties"]["eventos"]},
-               "required": ["eventos"]}
-    instrucciones = INSTRUCCIONES.split('En "escudos"')[0].format(
-        publicado=f"{publicado:%Y-%m-%d %H:%M}", ancho=ancho, alto=alto, texto=afiche["texto"])
+    publicado = datetime.strptime(afiche["publicado"], "%Y-%m-%d %H:%M").replace(tzinfo=TZ_BO)
+    if MODELO.startswith("gemini"):
+        ruta = Path(tempfile.gettempdir()) / "afiche.jpg"
+        ruta.write_bytes(imagen)
+        clave = os.environ["GEMINI_API_KEY"]
+        return analizar(lambda c: pedir_a_gemini(clave, c), MODELO, ruta,
+                        {"fecha_unix": publicado.timestamp(), "texto": afiche["texto"]})
+    esquema = ESQUEMA
+    instrucciones = INSTRUCCIONES.format(publicado=f"{publicado:%Y-%m-%d %H:%M}", texto=afiche["texto"])
     cuerpo = {
         "model": MODELO, "stream": False, "think": False, "format": esquema,
         "options": {"temperature": 0, "num_ctx": 8192, "num_predict": 3000},
@@ -109,11 +111,14 @@ def main() -> int:
         try:
             eventos = leer(afiche)
         except Exception as e:
-            print(f"{nombre}: ERROR {type(e).__name__}: {e}")
+            print(f"{nombre}: ERROR {type(e).__name__}: {e} {getattr(e, 'detalle', '')}")
             eventos = []
         minutos = (time.time() - inicio) / 60
         print(f"\n=== {nombre}: {len(eventos)} eventos en {minutos:.1f} min")
         print(json.dumps(eventos, ensure_ascii=False))
+        publicado = datetime.strptime(afiche["publicado"], "%Y-%m-%d %H:%M")
+        for e in eventos:
+            e["fecha"] = fecha_iso(str(e.get("fecha", "")), publicado)
         bien = 0
         filas = []
         for fecha, hora, local, visitante in afiche["reales"]:

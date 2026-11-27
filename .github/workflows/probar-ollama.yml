@@ -1,11 +1,11 @@
-name: Probar Ollama
+name: Probar IA de afiches
 
 # Solo a mano. No modifica los datos ni el cron de noticias.
 on:
   workflow_dispatch:
     inputs:
       modelo:
-        description: "Modelo de visión de Ollama"
+        description: "gemini-... usa la clave de Google; otro nombre se prueba con Ollama"
         default: "qwen3-vl:4b"
 
 permissions:
@@ -24,10 +24,10 @@ jobs:
           python-version: "3.12"
 
       - name: Instalar Ollama y el modelo
+        if: ${{ !startsWith(inputs.modelo, 'gemini') }}
         env:
           MODELO: ${{ inputs.modelo }}
         run: |
-          pip install -q "Pillow>=10"
           curl -fsSL https://ollama.com/install.sh | sh
           if ! curl -sf http://127.0.0.1:11434/api/version > /dev/null; then
             nohup ollama serve > ollama.log 2>&1 &
@@ -39,4 +39,5 @@ jobs:
       - name: Leer los afiches y comparar
         env:
           MODELO: ${{ inputs.modelo }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python prueba_ollama.py

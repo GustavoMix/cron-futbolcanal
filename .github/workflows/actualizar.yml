@@ -1,0 +1,73 @@
+name: Actualizar noticias de Facebook
+
+on:
+  schedule:
+    # Las horas de cron van en UTC; Bolivia es UTC-4. GitHub puede retrasarlas.
+    # Tarde y noche (hora de partidos), cada 2 horas: 12, 14, 16, 18, 20, 22 y 00 h Bolivia.
+    - cron: "7 0,2,4,16,18,20,22 * * *"
+    # Madrugada y mañana, más espaciado: 05 y 09 h Bolivia.
+    - cron: "7 9,13 * * *"
+    # Sábado y domingo hay partidos desde la mañana: además 07 y 11 h Bolivia.
+    - cron: "7 11,15 * * 6,0"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: actualizar-facebook
+  cancel-in-progress: false
+
+jobs:
+  actualizar:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v6
+
+      - name: Descargar datos anteriores (rama datos)
+        run: |
+          URL="https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          # Si la rama existe, la descarga TIENE que funcionar: seguir sin ella borraría el historial.
+          estado=0
+          git ls-remote --exit-code --heads "$URL" datos > /dev/null || estado=$?
+          if [ "$estado" -eq 0 ]; then
+            git clone --depth 1 --branch datos "$URL" datos
+          elif [ "$estado" -eq 2 ]; then
+            echo "Primera corrida: todavía no existe la rama datos."
+            mkdir datos
+          else
+            exit "$estado"
+          fi
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Instalar dependencias
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tesseract-ocr tesseract-ocr-spa
+          pip install -r requirements.txt
+
+      - name: Leer las páginas de Facebook
+        env:
+          URL_BASE: https://raw.githubusercontent.com/${{ github.repository }}/datos/
+        run: python main.py
+
+      - name: Publicar en la rama datos
+        # También si todas las páginas fallaron: queda registrado el error en feed.json.
+        if: ${{ !cancelled() && hashFiles('datos/feed.json') != '' }}
+        run: |
+          cd datos
+          # Un solo commit reemplazado en cada corrida: el repositorio no crece sin límite.
+          rm -rf .git
+          git init -q -b datos
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Datos $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" datos

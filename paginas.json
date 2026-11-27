@@ -1,0 +1,9 @@
+{
+  "dias_historial": 30,
+  "max_publicaciones": 400,
+  "max_fotos_a_abrir_por_pagina": 30,
+  "paginas": [
+    { "id": "futbolcanal", "nombre": "FutbolCanal", "url": "https://www.facebook.com/FutbolCanal" },
+    { "id": "entelgol", "nombre": "Entel Gol", "url": "https://www.facebook.com/entelgol" }
+  ]
+}

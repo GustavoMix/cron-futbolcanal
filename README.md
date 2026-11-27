@@ -1,18 +1,26 @@
 # cron-futbolcanal
 
-Varias veces al día lee las publicaciones públicas de [FutbolCanal](https://www.facebook.com/FutbolCanal)
+Lee las publicaciones públicas de [FutbolCanal](https://www.facebook.com/FutbolCanal)
 y [Entel Gol](https://www.facebook.com/entelgol) y las deja en un JSON para la aplicación Android.
 
-## Horarios (hora de Bolivia)
+## Cada cuánto actualiza
 
-| Días | Horas |
+El workflow se despierta cada 30 minutos y `decidir.py` mira la última lectura:
+
+| Situación | Lee Facebook |
 |---|---|
-| Todos | 00, 05, 09, 12, 14, 16, 18, 20, 22 |
-| Sábado y domingo, además | 07, 11 |
+| Partido anunciado (desde 30 min antes hasta 2 h 30 después del inicio) | cada 30 min |
+| Había una transmisión en vivo (publicada hace menos de 6 h) | cada 30 min |
+| Alguna página falló | cada hora |
+| 15 o más publicaciones en las 3 horas previas a la última lectura | cada 2 horas |
+| Calma | cada 6 horas |
 
-Las corridas salen al minuto 7 y GitHub puede retrasarlas. Se cambian en
-`.github/workflows/actualizar.yml` (en UTC). También se puede lanzar a mano desde
-la pestaña Actions con "Run workflow".
+Las horas de partido salen del texto de las publicaciones ("HOY 14:00",
+"Sábado 28 ... 16:00 H"). No se leen de las fotos. GitHub puede retrasar u omitir
+turnos. Los tiempos se cambian al inicio de `decidir.py`. Para actualizar al momento:
+pestaña Actions, "Run workflow".
+
+Pruebas: `.venv\Scripts\python -m unittest test_decidir`
 
 ## Lo que lee la aplicación
 

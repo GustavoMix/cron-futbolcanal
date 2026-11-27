@@ -2,14 +2,15 @@ name: Actualizar noticias de Facebook
 
 on:
   schedule:
-    # Las horas de cron van en UTC; Bolivia es UTC-4. GitHub puede retrasarlas.
-    # Tarde y noche (hora de partidos), cada 2 horas: 12, 14, 16, 18, 20, 22 y 00 h Bolivia.
-    - cron: "7 0,2,4,16,18,20,22 * * *"
-    # Madrugada y mañana, más espaciado: 05 y 09 h Bolivia.
-    - cron: "7 9,13 * * *"
-    # Sábado y domingo hay partidos desde la mañana: además 07 y 11 h Bolivia.
-    - cron: "7 11,15 * * 6,0"
+    # Solo despierta cada 30 minutos: decidir.py resuelve si toca leer Facebook
+    # (seguido con partidos, cada 6 horas con calma). GitHub puede retrasarlo.
+    - cron: "7,37 * * * *"
   workflow_dispatch:
+    inputs:
+      solo_si_toca:
+        description: "Respetar la decisión inteligente (si no, lee siempre)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -42,25 +43,34 @@ jobs:
             exit "$estado"
           fi
 
+      - name: Decidir si toca leer
+        id: decidir
+        env:
+          FORZAR: ${{ github.event_name == 'workflow_dispatch' && !inputs.solo_si_toca }}
+        run: python3 decidir.py datos/feed.json
+
       - uses: actions/setup-python@v6
+        if: steps.decidir.outputs.correr == 'true'
         with:
           python-version: "3.12"
           cache: "pip"
 
       - name: Instalar dependencias
+        if: steps.decidir.outputs.correr == 'true'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq tesseract-ocr tesseract-ocr-spa
           pip install -r requirements.txt
 
       - name: Leer las páginas de Facebook
+        if: steps.decidir.outputs.correr == 'true'
         env:
           URL_BASE: https://raw.githubusercontent.com/${{ github.repository }}/datos/
         run: python main.py
 
       - name: Publicar en la rama datos
         # También si todas las páginas fallaron: queda registrado el error en feed.json.
-        if: ${{ !cancelled() && hashFiles('datos/feed.json') != '' }}
+        if: ${{ !cancelled() && steps.decidir.outputs.correr == 'true' && hashFiles('datos/feed.json') != '' }}
         run: |
           cd datos
           # Un solo commit reemplazado en cada corrida: el repositorio no crece sin límite.

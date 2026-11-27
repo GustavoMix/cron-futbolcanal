@@ -83,12 +83,22 @@ def leer(afiche: dict) -> list[dict]:
                                     {"Content-Type": "application/json"})
     with urllib.request.urlopen(pedido, timeout=1500) as r:
         respuesta = json.load(r)
-    contenido = respuesta["message"]["content"]
-    try:
-        return json.loads(contenido)["eventos"]
-    except (ValueError, KeyError):
-        print("Respuesta ilegible:", contenido[:1500])
-        return []
+    mensaje = respuesta["message"]
+    contenido, pensado = mensaje.get("content") or "", mensaje.get("thinking") or ""
+    segundos = (respuesta.get("eval_duration") or 0) / 1e9
+    print(f"motivo={respuesta.get('done_reason')} tokens_entrada={respuesta.get('prompt_eval_count')} "
+          f"tokens_salida={respuesta.get('eval_count')} generando={segundos:.0f}s "
+          f"respuesta={len(contenido)} letras, pensamiento={len(pensado)} letras")
+    # Algunos modelos dejan el JSON en "thinking" aunque se pida no pensar.
+    for texto in (contenido, pensado):
+        inicio, fin = texto.find("{"), texto.rfind("}")
+        try:
+            return json.loads(texto[inicio:fin + 1])["eventos"]
+        except (ValueError, KeyError, TypeError):
+            continue
+    print("Respuesta ilegible. Contenido:", contenido[:800])
+    print("Final del pensamiento:", pensado[-800:])
+    return []
 
 
 def main() -> int:

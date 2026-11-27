@@ -141,6 +141,13 @@ Para encender la IA, crea una clave en https://aistudio.google.com/apikey (sin a
 facturación) y guárdala en GitHub como secreto `GEMINI_API_KEY` (Settings, Secrets and
 variables, Actions). Sin la clave todo lo demás funciona igual.
 
+Gemini también lee el texto de las publicaciones sin imagen y las miniaturas de los videos, y
+**decide cada cuánto leer Facebook** (`ritmo_ia.py`): después de cada lectura recibe el ritmo
+real de publicación de cada página (por día y por hora) y los partidos próximos, y responde
+cuántos minutos esperar (entre 60 y 720). Queda en `feed.json` como `plan` y `decidir.py` lo
+usa; con partido o transmisión en vivo se lee seguido igual, y sin clave rigen los valores
+fijos. Usa el mismo secreto `GEMINI_API_KEY`.
+
 Cada imagen se analiza una sola vez. En `paginas.json`, `ia` fija el modelo, cuántos días
 hacia atrás se miran y cuántas imágenes como máximo por corrida. Si se agota el cupo gratuito,
 lo pendiente se lee en otra corrida. En el plan gratuito Google puede usar lo que se le envía.

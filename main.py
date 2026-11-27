@@ -19,6 +19,7 @@ from PIL import Image
 from playwright.sync_api import sync_playwright
 
 import agenda_ia
+import ritmo_ia
 from facebook import Navegador, Recolector, caducidad
 
 RAIZ = Path(__file__).parent
@@ -359,6 +360,7 @@ def main() -> int:
     agenda_ia.leer_afiches(salida, publicaciones, cfg)
     eventos = agenda_ia.eventos_del_feed(publicaciones)
     escudos = agenda_ia.publicar_escudos(salida, URL_BASE)
+    plan = ritmo_ia.planear(publicaciones, eventos, cfg)
     print(f"Agenda de afiches: {len(eventos)} eventos; escudos: {len(escudos)}")
     guardar_json(salida / "feed.json", {
         "version": 1,
@@ -368,6 +370,7 @@ def main() -> int:
         "publicaciones": publicaciones,
         "eventos": eventos,
         "escudos": escudos,
+        "plan": plan,
     })
     guardar_json(salida / "estado.json", {"fotos_abiertas": sorted(abiertas, key=int)[-1000:]})
     print(f"Listo: {len(publicaciones)} publicaciones en {salida / 'feed.json'}")

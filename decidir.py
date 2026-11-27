@@ -28,6 +28,7 @@ CADA_PARTIDO = 25       # ~30 min
 CADA_FALLO = 55         # ~1 h
 CADA_MOVIDO = 115       # ~2 h
 CADA_CALMA = 350        # ~6 h
+MINIMO_PLAN, MAXIMO_PLAN = 60, 720   # límites del plan que decide la IA
 
 DIAS = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
 MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
@@ -111,6 +112,12 @@ def decidir(feed: dict, ahora: datetime) -> tuple[bool, str]:
     publicaciones = feed.get("publicaciones", [])
 
     cada, motivo = CADA_CALMA, "calma"
+    plan = feed.get("plan") or {}
+    try:  # lo que Gemini decidió en la última lectura, según el ritmo de publicación
+        cada_ia = max(MINIMO_PLAN, min(MAXIMO_PLAN, int(plan["cada_min"]))) - 5
+        cada, motivo = cada_ia, f"plan de la IA: {str(plan.get('motivo', ''))[:80]}"
+    except (KeyError, TypeError, ValueError):
+        pass
     anunciadas = [inicio for p in publicaciones for inicio in horas_anunciadas(p)]
     # Las que la IA leyó dentro de los afiches.
     anunciadas += [datetime.fromtimestamp(e["inicio_unix"], TZ_BO) for e in feed.get("eventos", []) if e.get("hora_confirmada", True)]
@@ -134,7 +141,7 @@ def decidir(feed: dict, ahora: datetime) -> tuple[bool, str]:
     elif not all(f.get("ok") for f in feed.get("fuentes", [])):
         cada, motivo = CADA_FALLO, "una página falló la última vez"
     elif recientes >= NOVEDADES_MINIMO:
-        cada = CADA_MOVIDO
+        cada = min(cada, CADA_MOVIDO)
         motivo = f"mucho movimiento ({recientes} publicaciones en {NOVEDADES_HORAS} h)"
 
     return minutos >= cada, f"{motivo}; pasaron {minutos:.0f} min y se lee desde los {cada}"

@@ -1,0 +1,42 @@
+name: Probar Ollama
+
+# Solo a mano. No modifica los datos ni el cron de noticias.
+on:
+  workflow_dispatch:
+    inputs:
+      modelo:
+        description: "Modelo de visión de Ollama"
+        default: "qwen3-vl:4b"
+
+permissions:
+  contents: read
+
+jobs:
+  probar:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Instalar Ollama y el modelo
+        env:
+          MODELO: ${{ inputs.modelo }}
+        run: |
+          pip install -q "Pillow>=10"
+          curl -fsSL https://ollama.com/install.sh | sh
+          if ! curl -sf http://127.0.0.1:11434/api/version > /dev/null; then
+            nohup ollama serve > ollama.log 2>&1 &
+          fi
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:11434/api/version && break; sleep 2; done
+          nproc; free -h
+          ollama pull "$MODELO"
+
+      - name: Leer los afiches y comparar
+        env:
+          MODELO: ${{ inputs.modelo }}
+        run: python prueba_ollama.py

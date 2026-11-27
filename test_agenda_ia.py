@@ -162,6 +162,22 @@ class TextoYVideos(Base):
         self.assertEqual(len(ia.eventos_del_feed([p])), 2)
 
 
+    def test_si_cambia_la_hora_vale_el_anuncio_mas_nuevo(self):
+        viejo, nuevo = self.pub(id="v", dia=25), self.pub(id="n", dia=27)
+        viejo["imagenes"][0]["ia_eventos"] = [evento(hora="17:15")]
+        nuevo["imagenes"][0]["ia_eventos"] = [evento(hora="20:00")]
+        [e] = ia.eventos_del_feed([viejo, nuevo])
+        self.assertEqual(e["fecha"][11:16], "20:00")
+        self.assertTrue(e["hora_cambiada"])
+        self.assertEqual(e["hora_anterior"], "17:15")
+
+    def test_categoria_y_estadio_se_guardan(self):
+        p = self.pub()
+        p["imagenes"][0]["ia_eventos"] = [{**evento(), "categoria": "Futbol", "estadio": "Hernando Siles"}]
+        [e] = ia.eventos_del_feed([p])
+        self.assertEqual((e["categoria"], e["estadio"]), ("futbol", "Hernando Siles"))
+
+
 class Escudos(Base):
     def test_nombres(self):
         self.assertEqual(ia.clave_equipo("CDT. Real Oruro"), "real oruro")

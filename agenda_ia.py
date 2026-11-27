@@ -51,6 +51,8 @@ ESQUEMA = _objeto({
         "titulo": {"type": "string", "description": "Nombre corto del evento"},
         "competencia": {"type": "string", "description": "Torneo, o vacío"},
         "canal": {"type": "string", "description": "Solo el número de canal de TV, o vacío"},
+        "categoria": {"type": "string", "description": "futbol, automovilismo, tenis, basquet, otro"},
+        "estadio": {"type": "string", "description": "Estadio o ciudad si el anuncio lo dice, o vacío"},
     })},
 })
 
@@ -75,6 +77,7 @@ En "eventos", anota cada partido o programa que {anuncio} anuncie con un día:
   agrupa.
 - Los dos equipos de una fila están a la izquierda y a la derecha de ella (o a los lados de
   "vs"). El nombre de una ciudad o estadio junto a la hora NO es un equipo.
+- En "categoria" pon el deporte: futbol, automovilismo (F1, MotoGP), tenis, basquet u otro.
 - Escribe los nombres de los equipos completos, sin abreviaturas ("Atlético de Madrid", no
   "ATL. Madrid").
 
@@ -263,9 +266,11 @@ def eventos_del_feed(publicaciones: list[dict]) -> list[dict]:
                     "titulo": titulo,
                     "local": local if visitante else "", "visitante": visitante if local else "",
                     "competencia": dato("competencia"), "canal": canal.group() if canal else "",
+                    "categoria": dato("categoria").lower(), "estadio": dato("estadio"),
+                    "publicado_unix": p["fecha_unix"],
                 })
     unicos: list[dict] = []
-    for e in completar_con_fixture(lista, publicaciones):
+    for e in aplicar_cambios_de_hora(completar_con_fixture(lista, publicaciones)):
         # El mismo partido anunciado en el texto, en el afiche o en dos páginas sale una vez.
         previo = next((u for u in unicos if mismo_partido(u, e)), None)
         if previo is None:
@@ -273,6 +278,26 @@ def eventos_del_feed(publicaciones: list[dict]) -> list[dict]:
         else:
             fusionar(previo, e)
     return sorted(unicos, key=lambda e: e["inicio_unix"])
+
+
+def aplicar_cambios_de_hora(eventos: list[dict]) -> list[dict]:
+    """Si un mismo partido aparece con dos horas el mismo día, vale la del anuncio más nuevo.
+
+    El evento que queda trae `hora_cambiada` y `hora_anterior` para avisar "se movió".
+    """
+    viejos = set()
+    for i, a in enumerate(eventos):
+        for b in eventos[i + 1:]:
+            if not (a["local"] and b["local"] and a["hora_confirmada"] and b["hora_confirmada"]
+                    and a["fecha"][:10] == b["fecha"][:10] and a["inicio_unix"] != b["inicio_unix"]
+                    and a["publicado_unix"] != b["publicado_unix"]
+                    and any(mismo_equipo(x, y) for x in (a["local"], a["visitante"])
+                            for y in (b["local"], b["visitante"]))):
+                continue
+            nuevo, viejo = (a, b) if a["publicado_unix"] > b["publicado_unix"] else (b, a)
+            nuevo["hora_cambiada"], nuevo["hora_anterior"] = True, viejo["fecha"][11:16]
+            viejos.add(id(viejo))
+    return [e for e in eventos if id(e) not in viejos]
 
 
 def mismo_equipo(a: str, b: str) -> bool:
@@ -302,7 +327,7 @@ def fusionar(previo: dict, otro: dict):
         for lado in ("local", "visitante"):
             previo[lado] = max(previo[lado], otro[lado], key=len)
         previo["titulo"] = f"{previo['local']} vs {previo['visitante']}"
-    for campo in ("canal", "competencia"):
+    for campo in ("canal", "competencia", "estadio", "categoria"):
         previo[campo] = previo[campo] or otro[campo]
 
 

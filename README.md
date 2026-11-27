@@ -148,6 +148,14 @@ cuántos minutos esperar (entre 60 y 720). Queda en `feed.json` como `plan` y `d
 usa; con partido o transmisión en vivo se lee seguido igual, y sin clave rigen los valores
 fijos. Usa el mismo secreto `GEMINI_API_KEY`.
 
+Cada evento trae además `categoria` (futbol, automovilismo...), `estadio`, y si el partido se
+movió de hora, `hora_cambiada` y `hora_anterior`.
+
+**Escudos:** los que pongas a mano en `escudos/` mandan. Para los demás equipos de la agenda se
+buscan solos en TheSportsDB (clave pública gratuita; opcional `THESPORTSDB_KEY`), una sola vez
+por equipo, y solo se aceptan resultados de fútbol con un nombre parecido. Quedan en `escudos`
+de `feed.json`. Se apagan con `"escudos": {"automaticos": false}` en `paginas.json`.
+
 Cada imagen se analiza una sola vez. En `paginas.json`, `ia` fija el modelo, cuántos días
 hacia atrás se miran y cuántas imágenes como máximo por corrida. Si se agota el cupo gratuito,
 lo pendiente se lee en otra corrida. En el plan gratuito Google puede usar lo que se le envía.

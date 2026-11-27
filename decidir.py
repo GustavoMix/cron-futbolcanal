@@ -111,8 +111,11 @@ def decidir(feed: dict, ahora: datetime) -> tuple[bool, str]:
     publicaciones = feed.get("publicaciones", [])
 
     cada, motivo = CADA_CALMA, "calma"
+    anunciadas = [inicio for p in publicaciones for inicio in horas_anunciadas(p)]
+    # Las que la IA leyó dentro de los afiches.
+    anunciadas += [datetime.fromtimestamp(e["inicio_unix"], TZ_BO) for e in feed.get("eventos", []) if e.get("hora_confirmada", True)]
     partidos = sorted({
-        inicio for p in publicaciones for inicio in horas_anunciadas(p)
+        inicio for inicio in anunciadas
         if inicio - ANTES_DEL_PARTIDO <= ahora <= inicio + DESPUES_DEL_PARTIDO
     })
     en_vivo = any(

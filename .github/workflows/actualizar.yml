@@ -66,6 +66,8 @@ jobs:
         if: steps.decidir.outputs.correr == 'true'
         env:
           URL_BASE: https://raw.githubusercontent.com/${{ github.repository }}/datos/
+          # Opcional: sin esta clave no se leen los partidos de los afiches.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python main.py
 
       - name: Publicar en la rama datos

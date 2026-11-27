@@ -18,6 +18,7 @@ from pathlib import Path
 from PIL import Image
 from playwright.sync_api import sync_playwright
 
+import agenda_ia
 from facebook import Navegador, Recolector, caducidad
 
 RAIZ = Path(__file__).parent
@@ -354,12 +355,18 @@ def main() -> int:
     )[: cfg.get("max_publicaciones", 400)]
     leer_textos(salida, publicaciones)
     limpiar_media(salida, publicaciones)
+    agenda_ia.leer_afiches(salida, publicaciones, cfg)
+    eventos = agenda_ia.eventos_del_feed(publicaciones)
+    escudos = agenda_ia.publicar_escudos(salida, URL_BASE)
+    print(f"Agenda de afiches: {len(eventos)} eventos; escudos: {len(escudos)}")
     guardar_json(salida / "feed.json", {
         "version": 1,
         "actualizado": iso(),
         "total": len(publicaciones),
         "fuentes": fuentes,
         "publicaciones": publicaciones,
+        "eventos": eventos,
+        "escudos": escudos,
     })
     guardar_json(salida / "estado.json", {"fotos_abiertas": sorted(abiertas, key=int)[-1000:]})
     print(f"Listo: {len(publicaciones)} publicaciones en {salida / 'feed.json'}")

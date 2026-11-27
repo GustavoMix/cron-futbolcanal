@@ -53,14 +53,14 @@ ESQUEMA = _objeto({
     })},
 })
 
-INSTRUCCIONES = """Esta imagen la publicó la página de Facebook de un canal deportivo de Bolivia.
+INSTRUCCIONES = """{origen} la publicó la página de Facebook de un canal deportivo de Bolivia.
 Fecha de la publicación (hora de Bolivia): {publicado}.
 Texto de la publicación, como referencia:
 <publicacion>
 {texto}
 </publicacion>
 
-En "eventos", anota cada partido o programa que la imagen anuncie con un día:
+En "eventos", anota cada partido o programa que {anuncio} anuncie con un día:
 - Solo lo que todavía se va a jugar o emitir según el anuncio. Los resultados, tablas de
   posiciones, designaciones sin horario y promociones comerciales no son eventos.
 - Usa la fecha de la publicación para resolver "hoy", "mañana" o un día de la semana.
@@ -102,13 +102,21 @@ def publicar_escudos(salida: Path, url_base: str, fijos: Path = RAIZ / "escudos"
 
 
 # ---------- IA ----------
+def contenedores(p: dict) -> list[dict]:
+    """Dónde se guarda lo que lee la IA: cada imagen, la miniatura del video o, si no hay
+    nada visual, la propia publicación (se lee solo su texto)."""
+    mini = (p.get("video") or {}).get("miniatura")
+    visuales = list(p.get("imagenes", [])) + ([mini] if mini else [])
+    return visuales or [p]
+
+
 def pendientes(publicaciones: list[dict], ahora: float, dias: int) -> list[tuple[dict, dict]]:
-    """Imágenes recientes con pinta de anuncio sin analizar: calendarios primero, luego lo más nuevo."""
+    """Material reciente con pinta de anuncio sin analizar: calendarios primero, luego lo más nuevo."""
     lista = []
     for p in sorted(publicaciones, key=lambda p: p["fecha_unix"], reverse=True):
         if ahora - p["fecha_unix"] > dias * 86400:
             continue
-        for img in p.get("imagenes", []):
+        for img in contenedores(p):
             if "ia_eventos" not in img and CANDIDATA.search(f"{p.get('texto', '')} {img.get('texto_ocr') or ''}"):
                 lista.append((p, img))
     return sorted(lista, key=lambda par: not CALENDARIO.search(
@@ -153,18 +161,21 @@ def interpretar(respuesta: dict) -> list[dict]:
     raise ValueError(f"respuesta sin eventos (estado {respuesta.get('status')}, campos {sorted(respuesta)})")
 
 
-def analizar(pedir, modelo: str, ruta: Path, publicacion: dict) -> list[dict]:
-    """Pide a Gemini los eventos de una imagen."""
+def analizar(pedir, modelo: str, ruta: Path | None, publicacion: dict) -> list[dict]:
+    """Pide a Gemini los eventos de una imagen, o solo del texto si no hay imagen."""
     publicado = datetime.fromtimestamp(publicacion["fecha_unix"], TZ_BO)
+    con_imagen = ruta is not None
+    partes = [{"type": "text", "text": INSTRUCCIONES.format(
+        origen="Esta imagen" if con_imagen else "Esta publicación, que no trae imagen,",
+        anuncio="la imagen" if con_imagen else "la publicación",
+        publicado=f"{publicado:%Y-%m-%d %H:%M, %A}",
+        texto=(publicacion.get("texto") or "")[:2000])}]
+    if con_imagen:
+        partes.append({"type": "image", "mime_type": "image/jpeg",
+                       "data": base64.standard_b64encode(ruta.read_bytes()).decode()})
     return interpretar(pedir({
         "model": modelo,
-        "input": [
-            {"type": "text", "text": INSTRUCCIONES.format(
-                publicado=f"{publicado:%Y-%m-%d %H:%M, %A}",
-                texto=(publicacion.get("texto") or "")[:2000])},
-            {"type": "image", "mime_type": "image/jpeg",
-             "data": base64.standard_b64encode(ruta.read_bytes()).decode()},
-        ],
+        "input": partes,
         "response_format": {"type": "text", "mime_type": "application/json", "schema": ESQUEMA},
     }))
 
@@ -180,6 +191,13 @@ def leer_afiches(salida: Path, publicaciones: list[dict], cfg: dict, pedir=None,
 
         def pedir(cuerpo):
             return pedir_a_gemini(clave, cuerpo)
+    pedir_real, uso = pedir, {"pedidos": 0, "bytes": 0}
+
+    def pedir(cuerpo):
+        uso["pedidos"] += 1
+        uso["bytes"] += len(json.dumps(cuerpo))
+        return pedir_real(cuerpo)
+
     modelo = ia.get("modelo", MODELO)
     ahora = ahora or datetime.now(TZ_BO).timestamp()
     cola = pendientes(publicaciones, ahora, ia.get("dias", DIAS))
@@ -188,7 +206,8 @@ def leer_afiches(salida: Path, publicaciones: list[dict], cfg: dict, pedir=None,
         if i:
             time.sleep(ia.get("pausa_seg", PAUSA_SEG))
         try:
-            imagen["ia_eventos"] = analizar(pedir, modelo, salida / imagen["archivo"], publicacion)
+            ruta = salida / imagen["archivo"] if "archivo" in imagen else None
+            imagen["ia_eventos"] = analizar(pedir, modelo, ruta, publicacion)
         except Exception as e:
             codigo = getattr(e, "code", None)
             print(f"  IA falló en {imagen['archivo']}: {type(e).__name__}: {e} {getattr(e, 'detalle', '')}"[:500])
@@ -199,7 +218,8 @@ def leer_afiches(salida: Path, publicaciones: list[dict], cfg: dict, pedir=None,
             continue  # queda pendiente para la próxima corrida
         fallos = 0
         leidas += 1
-    print(f"IA ({modelo}): {leidas} afiches leídos, {max(len(cola) - leidas, 0)} pendientes")
+    print(f"IA ({modelo}): {leidas} leídos, {max(len(cola) - leidas, 0)} pendientes; "
+          f"{uso['pedidos']} pedidos, {uso['bytes'] / 1024:.0f} KB enviados")
 
 
 # ---------- eventos ----------
@@ -218,7 +238,7 @@ def eventos_del_feed(publicaciones: list[dict]) -> list[dict]:
     lista = []
     for p in publicaciones:
         publicado = datetime.fromtimestamp(p["fecha_unix"], TZ_BO)
-        for img in p.get("imagenes", []):
+        for img in contenedores(p):
             for e in img.get("ia_eventos") or []:
                 def dato(clave):
                     return str(e.get(clave) or "").strip()
@@ -243,7 +263,13 @@ def eventos_del_feed(publicaciones: list[dict]) -> list[dict]:
                     "local": local if visitante else "", "visitante": visitante if local else "",
                     "competencia": dato("competencia"), "canal": canal.group() if canal else "",
                 })
-    return sorted(completar_con_fixture(lista, publicaciones), key=lambda e: e["inicio_unix"])
+    unicos = {}
+    for e in completar_con_fixture(lista, publicaciones):
+        # El mismo partido anunciado en el texto, en el afiche o en dos páginas sale una vez.
+        previo = unicos.setdefault((e["inicio_unix"], clave_equipo(e["titulo"])), e)
+        for campo in ("canal", "competencia"):
+            previo[campo] = previo[campo] or e[campo]
+    return sorted(unicos.values(), key=lambda e: e["inicio_unix"])
 
 
 def completar_con_fixture(eventos: list[dict], publicaciones: list[dict]) -> list[dict]:

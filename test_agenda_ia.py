@@ -120,6 +120,33 @@ class Afiches(Base):
         self.assertEqual(ia.eventos_del_feed([p]), [])
 
 
+class TextoYVideos(Base):
+    def test_publicacion_sin_imagen_se_lee_por_su_texto(self):
+        p = {**self.pub(texto="Bolívar vs Always Ready, sábado 29 a las 17:15"), "imagenes": []}
+        falso = Falso([evento()])
+        self.leer(falso, [p])
+        self.leer(falso, [p])
+        self.assertEqual(len(falso.pedidos), 1)
+        self.assertEqual([x["type"] for x in falso.pedidos[0]["input"]], ["text"])
+        [e] = ia.eventos_del_feed([p])
+        self.assertEqual(e["titulo"], "Bolívar vs Always Ready")
+
+    def test_miniatura_de_video_se_lee_como_imagen(self):
+        p = {**self.pub(texto="EN VIVO hoy 19:00"), "imagenes": [],
+             "video": {"miniatura": {"archivo": "media/a.jpg", "texto_ocr": ""}}}
+        falso = Falso([evento(fecha="2026-11-27", hora="19:00")])
+        self.leer(falso, [p])
+        self.assertEqual([x["type"] for x in falso.pedidos[0]["input"]], ["text", "image"])
+        self.assertEqual(len(ia.eventos_del_feed([p])), 1)
+
+    def test_el_mismo_partido_sale_una_sola_vez(self):
+        a, b = self.pub(id="a"), self.pub(id="b")
+        a["imagenes"][0]["ia_eventos"] = [evento()]
+        b["imagenes"][0]["ia_eventos"] = [{**evento(), "canal": "5"}]
+        [e] = ia.eventos_del_feed([a, b])
+        self.assertEqual(e["canal"], "5")
+
+
 class Escudos(Base):
     def test_nombres(self):
         self.assertEqual(ia.clave_equipo("CDT. Real Oruro"), "real oruro")

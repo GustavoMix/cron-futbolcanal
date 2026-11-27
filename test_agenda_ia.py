@@ -206,6 +206,59 @@ class TextoYVideos(Base):
         self.assertEqual((e["estado"], e["marcador_local"]), ("programado", None))
 
 
+class Tablas(Base):
+    TABLA = {"competencia": "Liga", "grupo": "", "filas": [
+        {"posicion": str(i), "equipo": n, "puntos": str(30 - i), "jugados": "10"}
+        for i, n in enumerate(["Bolívar", "Aurora", "Blooming"], 1)]}
+
+    def respuesta(self, tablas):
+        return {"outputs": [{"type": "text", "text": json.dumps({"eventos": [], "tablas": tablas})}]}
+
+    def test_lee_y_publica_la_tabla_mas_nueva(self):
+        vieja, nueva = self.pub(texto="Tabla de posiciones", dia=25, id="v"), self.pub(texto="Tabla de posiciones", dia=26, id="n")
+        otra = {**self.TABLA, "filas": [{**f, "puntos": str(int(f["puntos"]) + 3)} for f in self.TABLA["filas"]]}
+        for p, tabla in ((vieja, self.TABLA), (nueva, otra)):
+            self.leer(Falso(respuesta=self.respuesta([tabla])), [p])
+        [t] = ia.tablas_del_feed([vieja, nueva])
+        self.assertEqual(t["publicacion"], "n")
+        self.assertEqual([(f["posicion"], f["equipo"], f["puntos"]) for f in t["filas"]][0], (1, "Bolívar", 32))
+
+    def test_filas_invalidas_o_pocas_se_descartan(self):
+        p = self.pub()
+        p["imagenes"][0]["ia_tablas"] = [{**self.TABLA, "filas": self.TABLA["filas"][:2]}]
+        self.assertEqual(ia.tablas_del_feed([p]), [])
+
+    def test_vuelve_a_leer_las_tablas_ya_analizadas_antes_una_sola_vez(self):
+        vieja = self.pub(texto="Tabla de posiciones", dia=10)       # leída sin soporte de tablas
+        vieja["imagenes"][0]["ia_eventos"] = []
+        sin_tabla = self.pub(texto="Feliz día", dia=10, id="x")
+        sin_tabla["imagenes"][0]["ia_eventos"] = []
+        falso = Falso(respuesta=self.respuesta([self.TABLA]))
+        self.leer(falso, [vieja, sin_tabla])
+        self.leer(falso, [vieja, sin_tabla])
+        self.assertEqual(len(falso.pedidos), 1)
+        self.assertEqual(vieja["imagenes"][0]["ia_version"], ia.VERSION_IA)
+        self.assertEqual(len(ia.tablas_del_feed([vieja])), 1)
+
+
+class Nombres(Base):
+    def test_un_solo_nombre_por_equipo(self):
+        a, b, c = self.pub(id="a"), self.pub(id="b"), self.pub(id="c")
+        a["imagenes"][0]["ia_eventos"] = [evento(local="Betis", visitante="Rayo Vallecano")]
+        b["imagenes"][0]["ia_eventos"] = [evento(local="Betis", visitante="R.Vallecano", fecha="2026-11-30")]
+        c["imagenes"][0]["ia_eventos"] = [evento(local="Real Betis", visitante="Elche", fecha="2026-12-01")]
+        canon = ia.canon_de([a, b, c])
+        eventos = ia.eventos_del_feed([a, b, c], canon)
+        self.assertEqual([e["titulo"] for e in eventos],
+                         ["Betis vs Rayo Vallecano", "Betis vs Rayo Vallecano", "Betis vs Elche"])
+
+    def test_manda_el_nombre_de_la_lista_a_mano(self):
+        p = self.pub()
+        p["imagenes"][0]["ia_eventos"] = [evento(local="ATL. Madrid", visitante="Elche")]
+        canon = ia.canon_de([p], [["Atlético de Madrid", "Atletico Madrid", "ATL. Madrid"]])
+        self.assertEqual(ia.eventos_del_feed([p], canon)[0]["local"], "Atlético de Madrid")
+
+
 class Escudos(Base):
     def test_nombres(self):
         self.assertEqual(ia.clave_equipo("CDT. Real Oruro"), "real oruro")

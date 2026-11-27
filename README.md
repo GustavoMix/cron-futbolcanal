@@ -165,6 +165,18 @@ marcadores en vivo: eso necesita otra fuente de datos.
 en `escudos/torneos.json` (mismo formato que `equipos.json`) mandan; los demás se buscan solos
 en TheSportsDB por el nombre de `competencia`, solo si el nombre se parece mucho.
 
+**Nombres de equipos:** en `eventos` y `tablas` cada equipo sale con un solo nombre ("Betis" y
+"Real Betis" son el mismo). Si existe `escudos/equipos.json`, el primer nombre de cada equipo es
+el oficial.
+
+**Tablas de posiciones:** `tablas` en `feed.json` (`competencia`, `grupo`, `actualizado`,
+`filas` con `posicion`, `equipo`, `puntos`, `jugados`); de cada torneo queda la más nueva. Las
+tablas y resultados que ya se habían leído antes de este soporte se releen una sola vez
+(hasta 30 días atrás, `ia.dias_releer`).
+
+**Clasificación:** cada publicación trae `ia_clase`: resultado, fixture, transmision, noticia,
+promocion u otro. Un solo pedido por corrida para hasta 40 publicaciones (`clasificar_ia.py`).
+
 Cada imagen se analiza una sola vez. En `paginas.json`, `ia` fija el modelo, cuántos días
 hacia atrás se miran y cuántas imágenes como máximo por corrida. Si se agota el cupo gratuito,
 lo pendiente se lee en otra corrida. En el plan gratuito Google puede usar lo que se le envía.

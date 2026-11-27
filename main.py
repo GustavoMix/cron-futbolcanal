@@ -19,6 +19,7 @@ from PIL import Image
 from playwright.sync_api import sync_playwright
 
 import agenda_ia
+import clasificar_ia
 import escudos_auto
 import ritmo_ia
 from facebook import Navegador, Recolector, caducidad
@@ -188,7 +189,7 @@ def armar(pieza: dict, rec: Recolector, fuente: str, salida: Path, previa: dict 
         "video": video,
         "visto_primera_vez": previa.get("visto_primera_vez") or iso(),
         "actualizado": iso(),
-        **({"ia_eventos": previa["ia_eventos"]} if "ia_eventos" in previa else {}),
+        **{k: previa[k] for k in ("ia_eventos", "ia_tablas", "ia_clase") if k in previa},
     }
 
 
@@ -359,7 +360,10 @@ def main() -> int:
     leer_textos(salida, publicaciones)
     limpiar_media(salida, publicaciones)
     agenda_ia.leer_afiches(salida, publicaciones, cfg)
-    eventos = agenda_ia.eventos_del_feed(publicaciones)
+    clasificar_ia.clasificar(publicaciones, cfg)
+    canon = agenda_ia.canon_de(publicaciones, agenda_ia.equipos_conocidos())
+    eventos = agenda_ia.eventos_del_feed(publicaciones, canon)
+    tablas = agenda_ia.tablas_del_feed(publicaciones, canon)
     escudos = agenda_ia.publicar_escudos(salida, URL_BASE)
     try:  # un fallo aquí nunca debe impedir publicar las noticias
         escudos += escudos_auto.completar(salida, URL_BASE, eventos, escudos, cfg)
@@ -381,6 +385,7 @@ def main() -> int:
         "eventos": eventos,
         "escudos": escudos,
         "torneos": torneos,
+        "tablas": tablas,
         "plan": plan,
     })
     guardar_json(salida / "estado.json", {"fotos_abiertas": sorted(abiertas, key=int)[-1000:]})

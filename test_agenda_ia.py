@@ -147,6 +147,21 @@ class TextoYVideos(Base):
         self.assertEqual(e["canal"], "5")
 
 
+    def test_nombres_abreviados_no_duplican_el_partido(self):
+        a, b, c = self.pub(id="a"), self.pub(id="b"), self.pub(id="c")
+        a["imagenes"][0]["ia_eventos"] = [evento(local="Betis", visitante="Rayo Vallecano")]
+        b["imagenes"][0]["ia_eventos"] = [evento(local="Betis", visitante="R.Vallecano")]
+        c["imagenes"][0]["ia_eventos"] = [evento(local="Rayo Vallecano", visitante="Real Betis")]
+        [e] = ia.eventos_del_feed([a, b, c])
+        self.assertEqual(e["titulo"], "Real Betis vs Rayo Vallecano")  # conserva el nombre más completo
+
+    def test_dos_partidos_a_la_misma_hora_no_se_mezclan(self):
+        p = self.pub()
+        p["imagenes"][0]["ia_eventos"] = [evento(local="Betis", visitante="Rayo Vallecano"),
+                                          evento(local="Málaga", visitante="Athletic Club")]
+        self.assertEqual(len(ia.eventos_del_feed([p])), 2)
+
+
 class Escudos(Base):
     def test_nombres(self):
         self.assertEqual(ia.clave_equipo("CDT. Real Oruro"), "real oruro")

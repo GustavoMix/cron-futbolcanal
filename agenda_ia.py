@@ -13,6 +13,7 @@ import re
 import shutil
 import time
 import unicodedata
+from difflib import SequenceMatcher
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -263,13 +264,46 @@ def eventos_del_feed(publicaciones: list[dict]) -> list[dict]:
                     "local": local if visitante else "", "visitante": visitante if local else "",
                     "competencia": dato("competencia"), "canal": canal.group() if canal else "",
                 })
-    unicos = {}
+    unicos: list[dict] = []
     for e in completar_con_fixture(lista, publicaciones):
         # El mismo partido anunciado en el texto, en el afiche o en dos páginas sale una vez.
-        previo = unicos.setdefault((e["inicio_unix"], clave_equipo(e["titulo"])), e)
-        for campo in ("canal", "competencia"):
-            previo[campo] = previo[campo] or e[campo]
-    return sorted(unicos.values(), key=lambda e: e["inicio_unix"])
+        previo = next((u for u in unicos if mismo_partido(u, e)), None)
+        if previo is None:
+            unicos.append(e)
+        else:
+            fusionar(previo, e)
+    return sorted(unicos, key=lambda e: e["inicio_unix"])
+
+
+def mismo_equipo(a: str, b: str) -> bool:
+    """"R.Vallecano" y "Rayo Vallecano", o "ATL. Madrid" y "Atlético de Madrid", son el mismo."""
+    a, b = clave_equipo(a).replace(" ", ""), clave_equipo(b).replace(" ", "")
+    if not a or not b:
+        return False
+    if a == b or (min(len(a), len(b)) >= 4 and (a in b or b in a)):
+        return True
+    return SequenceMatcher(None, a, b).ratio() >= 0.8
+
+
+def mismo_partido(a: dict, b: dict) -> bool:
+    """A la misma hora un equipo no juega dos partidos: si comparten uno, es el mismo partido."""
+    if a["inicio_unix"] != b["inicio_unix"]:
+        return False
+    if a["local"] and b["local"]:
+        return any(mismo_equipo(x, y) for x in (a["local"], a["visitante"]) for y in (b["local"], b["visitante"]))
+    return clave_equipo(a["titulo"]) == clave_equipo(b["titulo"])
+
+
+def fusionar(previo: dict, otro: dict):
+    """Deja en `previo` lo más completo de ambos: nombres más largos, canal y competencia."""
+    if previo["local"] and otro["local"]:
+        if not (mismo_equipo(previo["local"], otro["local"]) or mismo_equipo(previo["visitante"], otro["visitante"])):
+            otro = {**otro, "local": otro["visitante"], "visitante": otro["local"]}  # vienen invertidos
+        for lado in ("local", "visitante"):
+            previo[lado] = max(previo[lado], otro[lado], key=len)
+        previo["titulo"] = f"{previo['local']} vs {previo['visitante']}"
+    for campo in ("canal", "competencia"):
+        previo[campo] = previo[campo] or otro[campo]
 
 
 def completar_con_fixture(eventos: list[dict], publicaciones: list[dict]) -> list[dict]:

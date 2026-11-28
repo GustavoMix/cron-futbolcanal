@@ -1,0 +1,20 @@
+{
+ "equipos": [
+  {
+   "nombres": [
+    "AEK Atenas",
+    "AEK Athens F.C."
+   ],
+   "archivo": "auto_aek-athens.png"
+  },
+  {
+   "nombres": [
+    "AS Roma"
+   ],
+   "archivo": "auto_as-roma.png"
+  }
+ ],
+ "sin_escudo": {
+  "abb": "2026-11-28T06:11:06-04:00"
+ }
+}

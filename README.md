@@ -151,10 +151,11 @@ fijos. Usa el mismo secreto `GEMINI_API_KEY`.
 Cada evento trae además `categoria` (futbol, automovilismo...), `estadio`, y si el partido se
 movió de hora, `hora_cambiada` y `hora_anterior`.
 
-**Escudos:** los que pongas a mano en `escudos/` mandan. Para los demás equipos de la agenda se
-buscan solos en TheSportsDB (clave pública gratuita; opcional `THESPORTSDB_KEY`), una sola vez
-por equipo, y solo se aceptan resultados de fútbol con un nombre parecido. Quedan en `escudos`
-de `feed.json`. Se apagan con `"escudos": {"automaticos": false}` en `paginas.json`.
+**Escudos:** los que pongas a mano en `escudos/` mandan. Para los demás equipos de la agenda
+se busca su página en Wikipedia (español, luego inglés) y se toma su imagen principal, el
+escudo. Se busca una sola vez por equipo y solo se acepta una página de fútbol con un nombre
+parecido. Quedan en `escudos` de `feed.json`. Se apagan con `"escudos": {"automaticos": false}`
+en `paginas.json`. Si Wikipedia limita el ritmo (error 429), se reintenta en la próxima corrida.
 
 **Resultados finales:** cuando un afiche da el resultado final, el evento trae `estado`
 ("finalizado" o "programado"), `marcador_local` y `marcador_visitante`, y se une al partido
@@ -163,7 +164,7 @@ marcadores en vivo: eso necesita otra fuente de datos.
 
 **Logos de torneos:** `torneos` en `feed.json`, igual que los escudos. Los que pongas a mano
 en `escudos/torneos.json` (mismo formato que `equipos.json`) mandan; los demás se buscan solos
-en TheSportsDB por el nombre de `competencia`, solo si el nombre se parece mucho.
+en Wikipedia por el nombre de `competencia`, solo si el nombre se parece mucho.
 
 **Nombres de equipos:** en `eventos` y `tablas` cada equipo sale con un solo nombre ("Betis" y
 "Real Betis" son el mismo). Si existe `escudos/equipos.json`, el primer nombre de cada equipo es

@@ -1,9 +1,10 @@
-"""Escudos de los equipos que salen en la agenda, buscados solos en TheSportsDB (gratis).
+"""Escudos de equipos y logos de torneos, buscados solos en Wikipedia.
 
-Los escudos puestos a mano en `escudos/` siempre mandan. Para cada equipo de la agenda que
-no tenga escudo se busca una sola vez; el resultado (también el "no se encontró") queda en
-`escudos_auto.json` dentro de los datos, así no se repite el pedido. Solo se acepta un
-resultado de fútbol cuyo nombre se parezca al buscado: sin escudo es mejor que uno equivocado.
+Los escudos puestos a mano en `escudos/` siempre mandan. Para cada equipo o torneo de la agenda
+sin imagen se busca una sola vez: el resultado (también el "no se encontró") queda en
+`escudos_auto.json` y `torneos_auto.json` dentro de los datos, así no se repite el pedido. La
+imagen es la principal de la página de Wikipedia. Solo se acepta una página cuyo nombre se
+parezca al buscado y, en equipos, que hable de fútbol: sin escudo es mejor que uno equivocado.
 """
 from __future__ import annotations
 
@@ -22,9 +23,8 @@ from pathlib import Path
 import agenda_ia
 
 TZ_BO = timezone(timedelta(hours=-4))
-API = "https://www.thesportsdb.com/api/v1/json/{clave}/searchteams.php?t={nombre}"
 MAXIMO_POR_CORRIDA = 15
-PAUSA_SEG = 2.5            # la clave gratuita limita los pedidos por minuto
+PAUSA_SEG = 1.0            # Wikipedia pide no martillar el servicio
 REINTENTAR_DIAS = 14       # un equipo no encontrado se vuelve a buscar pasado este tiempo
 LADO_PX = 160
 
@@ -54,20 +54,60 @@ def _como_png(crudo: bytes) -> bytes:
     return salida.getvalue()
 
 
-def buscar(pedir, clave: str, nombre: str) -> dict | None:
-    """El equipo de fútbol que mejor responde al nombre, con su escudo, o None."""
-    datos = pedir(API.format(clave=clave, nombre=urllib.parse.quote(nombre)))
-    for e in datos.get("teams") or []:
-        if e.get("strSport") != "Soccer":
-            continue
-        escudo = e.get("strBadge") or e.get("strTeamBadge") or ""
-        host = urllib.parse.urlparse(escudo).hostname or ""
-        if not escudo.startswith("https://") or not host.endswith("thesportsdb.com"):
-            continue
-        alternos = [a.strip() for a in (e.get("strAlternate") or "").split(",") if a.strip()]
-        if any(agenda_ia.mismo_equipo(nombre, n) for n in [e.get("strTeam") or "", *alternos]):
-            return {"equipo": e["strTeam"], "alternos": alternos, "escudo": escudo}
+IDIOMAS = ("es", "en")
+SUFIJO_EQUIPO = {"es": " club de fútbol", "en": " football club"}
+ES_FUTBOL = re.compile(r"f[uú]tbol|football|soccer", re.I)
+MAXIMO_CANDIDATOS = 3
+
+
+def _compacto(texto: str) -> str:
+    return agenda_ia.clave_equipo(texto).replace(" ", "")
+
+
+def _coincide(nombre: str, resumen: dict, minimo: int = 4) -> bool:
+    """¿La página trata de lo que se buscó? Por el título (incluye redirecciones) o por su inicio."""
+    buscado, titulo = _compacto(nombre), _compacto(resumen.get("title") or "")
+    if not buscado or not titulo:
+        return False
+    if buscado == titulo or (min(len(buscado), len(titulo)) >= minimo and (buscado in titulo or titulo in buscado)):
+        return True
+    if SequenceMatcher(None, buscado, titulo).ratio() >= 0.8:
+        return True
+    return len(buscado) >= 6 and buscado in _compacto((resumen.get("extract") or "")[:250])
+
+
+def _imagen(resumen: dict) -> str | None:
+    url = (resumen.get("thumbnail") or {}).get("source") or ""
+    host = urllib.parse.urlparse(url).hostname or ""
+    return url if url.startswith("https://") and host.endswith("wikimedia.org") else None
+
+
+def _buscar_wiki(pedir, nombre: str, equipo: bool, pausa: float = 0.0) -> dict | None:
+    """La página de Wikipedia que mejor responde al nombre, con su imagen principal, o None."""
+    for idioma in IDIOMAS:
+        consulta = nombre + (SUFIJO_EQUIPO[idioma] if equipo else "")
+        base = f"https://{idioma}.wikipedia.org"
+        titulos = pedir(f"{base}/w/api.php?" + urllib.parse.urlencode({
+            "action": "query", "list": "search", "srsearch": consulta, "srlimit": 6, "srprop": "", "format": "json",
+        })).get("query", {}).get("search", [])
+        for resultado in titulos[:MAXIMO_CANDIDATOS]:
+            if pausa:
+                time.sleep(pausa)
+            titulo = resultado.get("title") or ""
+            resumen = pedir(f"{base}/api/rest_v1/page/summary/" + urllib.parse.quote(titulo.replace(" ", "_"), safe=""))
+            imagen = _imagen(resumen)
+            if not imagen or not _coincide(nombre, resumen, 4 if equipo else 6):
+                continue
+            if equipo and not ES_FUTBOL.search(f"{resumen.get('description') or ''} {(resumen.get('extract') or '')[:300]}"):
+                continue
+            return {"nombre": resumen.get("title") or titulo, "imagen": imagen}
     return None
+
+
+def buscar(pedir, nombre: str, pausa: float = 0.0) -> dict | None:
+    """El club de fútbol que mejor responde al nombre, con su escudo, o None."""
+    hallado = _buscar_wiki(pedir, nombre, equipo=True, pausa=pausa)
+    return {"equipo": hallado["nombre"], "alternos": [], "escudo": hallado["imagen"]} if hallado else None
 
 
 def _espacio(nombre: str) -> str:
@@ -82,7 +122,6 @@ def completar(salida: Path, url_base: str, eventos: list[dict], fijos: list[dict
         return []
     pedir, descargar = pedir or _pedir_json, descargar or _descargar
     pausa = PAUSA_SEG if pausa is None else pausa
-    clave = os.environ.get("THESPORTSDB_KEY", "").strip() or "3"  # "3" es la clave pública gratuita
     ahora = ahora or datetime.now(TZ_BO)
     ruta = salida / "escudos_auto.json"
     cache = json.loads(ruta.read_text(encoding="utf-8")) if ruta.exists() else {}
@@ -104,7 +143,7 @@ def completar(salida: Path, url_base: str, eventos: list[dict], fijos: list[dict
             time.sleep(pausa)
         buscados += 1
         try:
-            hallado = buscar(pedir, clave, nombre)
+            hallado = buscar(pedir, nombre, pausa)
             if hallado:
                 archivo = f"auto_{_espacio(hallado['equipo'])}.png"
                 crudo = descargar(hallado["escudo"])
@@ -133,13 +172,9 @@ def completar(salida: Path, url_base: str, eventos: list[dict], fijos: list[dict
 
 
 # ---------- logos de torneos ----------
-URL_LIGAS = "https://www.thesportsdb.com/api/v1/json/{clave}/all_leagues.php"
-URL_LIGA = "https://www.thesportsdb.com/api/v1/json/{clave}/lookupleague.php?id={id}"
-
-
 def _parecido(nombre: str, otro: str) -> float:
     """Qué tanto se parecen dos nombres de torneo (0 si no se parecen lo bastante)."""
-    a, b = (agenda_ia.clave_equipo(x).replace(" ", "") for x in (nombre, otro))
+    a, b = _compacto(nombre), _compacto(otro)
     if not a or not b:
         return 0.0
     razon = SequenceMatcher(None, a, b).ratio()
@@ -148,24 +183,10 @@ def _parecido(nombre: str, otro: str) -> float:
     return razon if razon >= 0.85 else 0.0
 
 
-def buscar_torneo(pedir, clave: str, nombre: str, ligas: list[dict]) -> dict | None:
+def buscar_torneo(pedir, nombre: str, pausa: float = 0.0) -> dict | None:
     """El torneo que mejor responde al nombre, con su logo, o None."""
-    mejor, puntos = None, 0.0
-    for liga in ligas:
-        nombres = [liga.get("strLeague") or "", *(liga.get("strLeagueAlternate") or "").split(",")]
-        p = max((_parecido(nombre, n.strip()) for n in nombres if n.strip()), default=0.0)
-        if p > puntos:
-            mejor, puntos = liga, p
-    if not mejor:
-        return None
-    datos = (pedir(URL_LIGA.format(clave=clave, id=mejor["idLeague"])).get("leagues") or [{}])[0]
-    for campo in ("strBadge", "strLogo"):
-        logo = datos.get(campo) or ""
-        host = urllib.parse.urlparse(logo).hostname or ""
-        if logo.startswith("https://") and host.endswith("thesportsdb.com"):
-            alternos = [a.strip() for a in (mejor.get("strLeagueAlternate") or "").split(",") if a.strip()]
-            return {"torneo": mejor["strLeague"], "alternos": alternos, "logo": logo}
-    return None
+    hallado = _buscar_wiki(pedir, nombre, equipo=False, pausa=pausa)
+    return {"torneo": hallado["nombre"], "alternos": [], "logo": hallado["imagen"]} if hallado else None
 
 
 def completar_torneos(salida: Path, url_base: str, eventos: list[dict], cfg: dict, pedir=None,
@@ -186,7 +207,6 @@ def completar_torneos(salida: Path, url_base: str, eventos: list[dict], cfg: dic
         return resultado
     pedir, descargar = pedir or _pedir_json, descargar or _descargar
     pausa = PAUSA_SEG if pausa is None else pausa
-    clave = os.environ.get("THESPORTSDB_KEY", "").strip() or "3"
     ahora = ahora or datetime.now(TZ_BO)
     ruta = salida / "torneos_auto.json"
     cache = json.loads(ruta.read_text(encoding="utf-8")) if ruta.exists() else {}
@@ -203,34 +223,28 @@ def completar_torneos(salida: Path, url_base: str, eventos: list[dict], cfg: dic
     faltan = [n for n in sorted({e["competencia"] for e in eventos if e.get("competencia")})
               if not tiene(n) and not reciente(n)]
     nuevos = 0
-    if faltan:
+    for i, nombre in enumerate(faltan[:ajustes.get("max_torneos_por_corrida", 8)]):
+        if i:
+            time.sleep(pausa)
         try:
-            ligas = [l for l in (pedir(URL_LIGAS.format(clave=clave)).get("leagues") or []) if l.get("idLeague")]
+            hallado = buscar_torneo(pedir, nombre, pausa)
+            crudo = descargar(hallado["logo"]) if hallado else None
         except Exception as e:
-            print(f"  lista de torneos: {type(e).__name__}: {e}"[:300])
-            ligas = None
-        for i, nombre in enumerate(faltan[:ajustes.get("max_torneos_por_corrida", 8)] if ligas is not None else []):
-            if i:
-                time.sleep(pausa)
-            try:
-                hallado = buscar_torneo(pedir, clave, nombre, ligas)
-                crudo = descargar(hallado["logo"]) if hallado else None
-            except Exception as e:
-                print(f"  logo de {nombre}: {type(e).__name__}: {e}"[:300])
-                break
-            if not hallado:
-                sin_logo[agenda_ia.clave_equipo(nombre)] = ahora.isoformat(timespec="seconds")
-                continue
-            archivo = f"torneo_{_espacio(hallado['torneo'])}.png"
-            try:
-                (salida / "escudos").mkdir(parents=True, exist_ok=True)
-                (salida / "escudos" / archivo).write_bytes(_como_png(crudo))
-            except Exception as e:
-                print(f"  logo de {nombre} ilegible: {type(e).__name__}: {e}"[:300])
-                continue
-            torneos.append({"nombres": list(dict.fromkeys([nombre, hallado["torneo"], *hallado["alternos"][:4]])),
-                            "archivo": archivo})
-            nuevos += 1
+            print(f"  logo de {nombre}: {type(e).__name__}: {e}"[:300])
+            break
+        if not hallado:
+            sin_logo[agenda_ia.clave_equipo(nombre)] = ahora.isoformat(timespec="seconds")
+            continue
+        archivo = f"torneo_{_espacio(hallado['torneo'])}.png"
+        try:
+            (salida / "escudos").mkdir(parents=True, exist_ok=True)
+            (salida / "escudos" / archivo).write_bytes(_como_png(crudo))
+        except Exception as e:
+            print(f"  logo de {nombre} ilegible: {type(e).__name__}: {e}"[:300])
+            continue
+        torneos.append({"nombres": list(dict.fromkeys([nombre, hallado["torneo"], *hallado["alternos"][:4]])),
+                        "archivo": archivo})
+        nuevos += 1
     ruta.write_text(json.dumps({"torneos": torneos, "sin_logo": sin_logo}, ensure_ascii=False, indent=1),
                     encoding="utf-8")
     print(f"Logos de torneos: {nuevos} nuevos; {len(torneos)} en total")

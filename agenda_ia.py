@@ -27,7 +27,7 @@ URL_API = "https://generativelanguage.googleapis.com/v1beta/interactions"
 MODELO = "gemini-3.5-flash-lite"
 DIAS = 7
 DIAS_RELEER = 30       # hacia atrás se vuelven a leer las tablas y resultados ya analizados antes
-VERSION_IA = 2         # 2 = entiende tablas de posiciones y resultados finales
+VERSION_IA = 3         # 2 = tablas y resultados finales; 3 = alineaciones (onceno inicial)
 MAXIMO_POR_CORRIDA = 20
 PAUSA_SEG = 7          # el plan gratuito limita los pedidos por minuto
 FALLOS_SEGUIDOS = 3
@@ -35,17 +35,28 @@ FALLOS_SEGUIDOS = 3
 # Solo se envían a la IA las imágenes que parecen anunciar partidos u horarios.
 CANDIDATA = re.compile(
     r"\bvs\b|fixture|partid|duelo|jornada|agenda|programaci|horario|\d{1,2}[:h]\d{2}|\bhrs?\b"
-    r"|resultado|finaliz|\bfinal\b|\bgoles?\b|tabla|posiciones|clasificaci",
+    r"|resultado|finaliz|\bfinal\b|\bgoles?\b|tabla|posiciones|clasificaci|onceno|alineaci|titulares",
     re.I,
 )
 # Lo que una lectura vieja (sin tablas ni resultados) pudo haber dejado pasar.
-RELEER = re.compile(r"tabla|posiciones|clasificaci|\bpts\b|resultado|finaliz|\bfinal\b", re.I)
+RELEER = {  # versión desde la cual ya se entendía: qué textos hacen volver a leer una imagen más vieja
+    2: re.compile(r"tabla|posiciones|clasificaci|\bpts\b|resultado|finaliz|\bfinal\b", re.I),
+    3: re.compile(r"onceno|once inicial|alineaci|titulares", re.I),
+}
 # Los calendarios completos van primero: traen muchos partidos de una sola vez.
 CALENDARIO = re.compile(r"fixture|agenda|jornada|partidos del d|programaci|la fecha|grilla", re.I)
 
 
 def _objeto(propiedades: dict) -> dict:
     return {"type": "object", "properties": propiedades, "required": list(propiedades)}
+
+
+def _jugador() -> dict:
+    return _objeto({
+        "numero": {"type": "string", "description": "Número de camiseta, o vacío"},
+        "nombre": {"type": "string", "description": "Nombre del jugador tal como está escrito"},
+        "rol": {"type": "string", "description": "capitan, arquero o vacío"},
+    })
 
 
 ESQUEMA = _objeto({
@@ -62,6 +73,14 @@ ESQUEMA = _objeto({
         "estado": {"type": "string", "description": "programado, o finalizado si el anuncio da el resultado final"},
         "marcador_local": {"type": "string", "description": "Goles o puntos del primer equipo si finalizó; si no, vacío"},
         "marcador_visitante": {"type": "string", "description": "Goles o puntos del segundo equipo si finalizó; si no, vacío"},
+    })},
+    "alineaciones": {"type": "array", "items": _objeto({
+        "local": {"type": "string", "description": "Equipo de la izquierda (el primero de 'A vs B')"},
+        "visitante": {"type": "string", "description": "Equipo de la derecha"},
+        "dt_local": {"type": "string", "description": "Director técnico del primero, o vacío"},
+        "dt_visitante": {"type": "string", "description": "Director técnico del segundo, o vacío"},
+        "jugadores_local": {"type": "array", "items": _jugador()},
+        "jugadores_visitante": {"type": "array", "items": _jugador()},
     })},
     "tablas": {"type": "array", "items": _objeto({
         "competencia": {"type": "string", "description": "Torneo de la tabla, o vacío"},
@@ -104,6 +123,11 @@ En "eventos", anota cada partido o programa que {anuncio} anuncie con un día:
 - Escribe los nombres de los equipos completos, sin abreviaturas ("Atlético de Madrid", no
   "ATL. Madrid").
 
+- Si la imagen es una alineación ("onceno inicial", titulares), anótala en "alineaciones": los
+  jugadores de la columna izquierda son del primer equipo y los de la derecha del segundo
+  (el orden de "A vs B" de la imagen), con número, nombre y rol (capitan, arquero o vacío), y
+  el director técnico (DT) de cada uno. Además anota el partido en "eventos" con la fecha de la
+  publicación. Si no hay ninguna alineación, deja "alineaciones" vacía.
 - Si la imagen es una tabla de posiciones, anótala en "tablas" (una por torneo o grupo) con
   cada fila: posición, equipo, puntos y partidos jugados. Una tabla no genera eventos. Si no hay
   ninguna tabla, deja "tablas" vacía.
@@ -155,7 +179,9 @@ def pendientes(publicaciones: list[dict], ahora: float, dias: int, dias_releer: 
             if "ia_eventos" not in img:
                 nueva = edad <= dias * 86400 and CANDIDATA.search(texto)
             else:
-                nueva = img.get("ia_version", 1) < VERSION_IA and edad <= dias_releer * 86400 and RELEER.search(texto)
+                version = img.get("ia_version", 1)
+                nueva = edad <= dias_releer * 86400 and any(
+                    version < desde and patron.search(texto) for desde, patron in RELEER.items())
             if nueva:
                 lista.append((p, img))
     return sorted(lista, key=lambda par: not CALENDARIO.search(
@@ -187,8 +213,8 @@ def textos_de(nodo):
             yield from textos_de(valor)
 
 
-def interpretar(respuesta: dict) -> tuple[list[dict], list[dict]]:
-    """Los eventos y las tablas de la respuesta. Falla si no hay eventos, para reintentar otro día."""
+def interpretar(respuesta: dict) -> tuple[list[dict], list[dict], list[dict]]:
+    """Los eventos, tablas y alineaciones de la respuesta. Falla si no hay eventos, para reintentar otro día."""
     for texto in textos_de(respuesta):
         inicio, fin = texto.find("{"), texto.rfind("}")
         try:
@@ -197,13 +223,14 @@ def interpretar(respuesta: dict) -> tuple[list[dict], list[dict]]:
         except (ValueError, KeyError, TypeError):
             continue
         if isinstance(eventos, list):
-            tablas = datos.get("tablas")
-            return ([e for e in eventos if isinstance(e, dict)],
-                    [t for t in tablas if isinstance(t, dict)] if isinstance(tablas, list) else [])
+            def lista(clave):
+                valor = datos.get(clave)
+                return [x for x in valor if isinstance(x, dict)] if isinstance(valor, list) else []
+            return [e for e in eventos if isinstance(e, dict)], lista("tablas"), lista("alineaciones")
     raise ValueError(f"respuesta sin eventos (estado {respuesta.get('status')}, campos {sorted(respuesta)})")
 
 
-def analizar(pedir, modelo: str, ruta: Path | None, publicacion: dict) -> tuple[list[dict], list[dict]]:
+def analizar(pedir, modelo: str, ruta: Path | None, publicacion: dict) -> tuple[list[dict], list[dict], list[dict]]:
     """Pide a Gemini los eventos de una imagen, o solo del texto si no hay imagen."""
     publicado = datetime.fromtimestamp(publicacion["fecha_unix"], TZ_BO)
     con_imagen = ruta is not None
@@ -249,12 +276,13 @@ def leer_afiches(salida: Path, publicaciones: list[dict], cfg: dict, pedir=None,
             time.sleep(ia.get("pausa_seg", PAUSA_SEG))
         try:
             ruta = salida / imagen["archivo"] if "archivo" in imagen else None
-            imagen["ia_eventos"], tablas = analizar(pedir, modelo, ruta, publicacion)
+            imagen["ia_eventos"], tablas, alineaciones = analizar(pedir, modelo, ruta, publicacion)
             imagen["ia_version"] = VERSION_IA
-            if tablas:
-                imagen["ia_tablas"] = tablas
-            else:
-                imagen.pop("ia_tablas", None)
+            for clave, valor in (("ia_tablas", tablas), ("ia_alineaciones", alineaciones)):
+                if valor:
+                    imagen[clave] = valor
+                else:
+                    imagen.pop(clave, None)
         except Exception as e:
             codigo = getattr(e, "code", None)
             print(f"  IA falló en {imagen['archivo']}: {type(e).__name__}: {e} {getattr(e, 'detalle', '')}"[:500])
@@ -336,7 +364,54 @@ def eventos_del_feed(publicaciones: list[dict], canon: dict | None = None) -> li
             e[lado] = canon.get(e[lado], e[lado])
         if e["local"] and e["visitante"]:
             e["titulo"] = f"{e['local']} vs {e['visitante']}"
+    adjuntar_alineaciones(unicos, publicaciones, canon)
     return sorted(unicos, key=lambda e: e["inicio_unix"])
+
+
+def _jugadores(lista) -> list[dict]:
+    jugadores = []
+    for j in lista or []:
+        if not isinstance(j, dict) or not str(j.get("nombre") or "").strip():
+            continue
+        numero = re.fullmatch(r"\d{1,3}", str(j.get("numero") or "").strip())
+        rol = str(j.get("rol") or "").strip().lower()
+        jugadores.append({"numero": int(numero.group()) if numero else None, "nombre": str(j["nombre"]).strip(),
+                          "rol": rol if rol in ("capitan", "arquero") else ""})
+    return jugadores
+
+
+def adjuntar_alineaciones(eventos: list[dict], publicaciones: list[dict], canon: dict):
+    """Pone la alineación (onceno inicial) en el partido del día; si no hay partido, lo crea."""
+    lista = []
+    for p in publicaciones:
+        for img in contenedores(p):
+            for a in img.get("ia_alineaciones") or []:
+                local, visitante = (str(a.get(k) or "").strip() for k in ("local", "visitante"))
+                jugadores_local, jugadores_visitante = _jugadores(a.get("jugadores_local")), _jugadores(a.get("jugadores_visitante"))
+                if local and visitante and len(jugadores_local) >= 5 and len(jugadores_visitante) >= 5:
+                    lista.append((p["fecha_unix"], p, {
+                        "local": canon.get(local, local), "visitante": canon.get(visitante, visitante),
+                        "dt_local": str(a.get("dt_local") or "").strip(), "dt_visitante": str(a.get("dt_visitante") or "").strip(),
+                        "jugadores_local": jugadores_local, "jugadores_visitante": jugadores_visitante,
+                    }))
+    for _, p, a in sorted(lista, key=lambda x: x[0]):  # la más nueva pisa a la anterior
+        dia = datetime.fromtimestamp(p["fecha_unix"], TZ_BO).date()
+        pareja = {"local": a["local"], "visitante": a["visitante"]}
+        candidatos = [e for e in eventos if e["local"] and _comparten_equipo(e, pareja)
+                      and 0 <= (datetime.fromisoformat(e["fecha"]).date() - dia).days <= 1]
+        partido = max(candidatos, key=lambda e: e["hora_confirmada"], default=None)
+        if partido is None:
+            inicio = datetime(dia.year, dia.month, dia.day, tzinfo=TZ_BO)
+            partido = {"publicacion": p["id"], "fuente": p["fuente"], "inicio_unix": int(inicio.timestamp()),
+                       "fecha": inicio.isoformat(timespec="minutes"), "hora_confirmada": False,
+                       "titulo": f"{a['local']} vs {a['visitante']}", "local": a["local"], "visitante": a["visitante"],
+                       "competencia": "", "canal": "", "categoria": "futbol", "estadio": "", "publicado_unix": p["fecha_unix"],
+                       "estado": "programado", "marcador_local": None, "marcador_visitante": None}
+            eventos.append(partido)
+        if not (mismo_equipo(partido["local"], a["local"]) or mismo_equipo(partido["visitante"], a["visitante"])):
+            a = {"local": a["visitante"], "visitante": a["local"], "dt_local": a["dt_visitante"], "dt_visitante": a["dt_local"],
+                 "jugadores_local": a["jugadores_visitante"], "jugadores_visitante": a["jugadores_local"]}
+        partido["alineacion"] = {k: a[k] for k in ("dt_local", "dt_visitante", "jugadores_local", "jugadores_visitante")}
 
 
 # ---------- nombres canónicos y tablas ----------
@@ -356,6 +431,8 @@ def canon_de(publicaciones: list[dict], conocidos: list[list[str]] = ()) -> dict
         for img in contenedores(p):
             for e in img.get("ia_eventos") or []:
                 nombres.update(str(e.get(k) or "").strip() for k in ("local", "visitante"))
+            for a in img.get("ia_alineaciones") or []:
+                nombres.update(str(a.get(k) or "").strip() for k in ("local", "visitante"))
             for t in img.get("ia_tablas") or []:
                 nombres.update(str(f.get("equipo") or "").strip() for f in t.get("filas") or [] if isinstance(f, dict))
     nombres.pop("", None)

@@ -189,7 +189,7 @@ def armar(pieza: dict, rec: Recolector, fuente: str, salida: Path, previa: dict 
         "video": video,
         "visto_primera_vez": previa.get("visto_primera_vez") or iso(),
         "actualizado": iso(),
-        **{k: previa[k] for k in ("ia_eventos", "ia_tablas", "ia_clase") if k in previa},
+        **{k: previa[k] for k in ("ia_eventos", "ia_tablas", "ia_alineaciones", "ia_clase") if k in previa},
     }
 
 

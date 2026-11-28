@@ -241,6 +241,49 @@ class Tablas(Base):
         self.assertEqual(len(ia.tablas_del_feed([vieja])), 1)
 
 
+class Alineaciones(Base):
+    def jugadores(self, n=11):
+        return [{"numero": str(i), "nombre": f"Jugador {i}", "rol": "capitan" if i == 1 else ""} for i in range(1, n + 1)]
+
+    def alineacion(self, local="Real Tomayapo", visitante="ABB"):
+        return {"local": local, "visitante": visitante, "dt_local": "Jorge Alfonso", "dt_visitante": "Jaime Jemio",
+                "jugadores_local": self.jugadores(), "jugadores_visitante": self.jugadores()}
+
+    def test_se_pega_al_partido_del_dia_y_acomoda_los_lados(self):
+        fixture, once = self.pub(id="f", dia=26), self.pub(id="o", dia=29, texto="Onceno inicial")
+        fixture["imagenes"][0]["ia_eventos"] = [evento(local="ABB", visitante="Real Tomayapo", fecha="2026-11-29", hora="15:00")]
+        once["imagenes"][0]["ia_alineaciones"] = [self.alineacion()]  # la imagen traía primero a Real Tomayapo
+        [e] = ia.eventos_del_feed([fixture, once], ia.canon_de([fixture, once]))
+        self.assertEqual(e["fecha"][11:16], "15:00")
+        self.assertEqual(e["alineacion"]["dt_local"], "Jaime Jemio")        # ABB es el local del partido
+        self.assertEqual(len(e["alineacion"]["jugadores_local"]), 11)
+        self.assertEqual(e["alineacion"]["jugadores_local"][0]["rol"], "capitan")
+
+    def test_sin_partido_anunciado_se_crea_uno(self):
+        once = self.pub(id="o", dia=29, texto="Onceno inicial")
+        once["imagenes"][0]["ia_alineaciones"] = [self.alineacion(local="ABB", visitante="Real Tomayapo")]
+        [e] = ia.eventos_del_feed([once], ia.canon_de([once]))
+        self.assertFalse(e["hora_confirmada"])
+        self.assertEqual(e["titulo"], "ABB vs Real Tomayapo")
+        self.assertIn("alineacion", e)
+
+    def test_una_alineacion_incompleta_se_descarta(self):
+        once = self.pub(id="o", dia=29)
+        once["imagenes"][0]["ia_alineaciones"] = [{**self.alineacion(), "jugadores_local": self.jugadores(3)}]
+        self.assertEqual(ia.eventos_del_feed([once]), [])
+
+    def test_vuelve_a_leer_los_onces_ya_analizados_con_la_version_anterior(self):
+        vieja = self.pub(texto="Onceno inicial de ABB", dia=25)
+        vieja["imagenes"][0].update(ia_eventos=[], ia_version=2)
+        falso = Falso(respuesta={"outputs": [{"type": "text", "text": json.dumps(
+            {"eventos": [], "tablas": [], "alineaciones": [self.alineacion()]})}]})
+        self.leer(falso, [vieja])
+        self.leer(falso, [vieja])
+        self.assertEqual(len(falso.pedidos), 1)
+        self.assertEqual(vieja["imagenes"][0]["ia_version"], ia.VERSION_IA)
+        self.assertEqual(len(vieja["imagenes"][0]["ia_alineaciones"]), 1)
+
+
 class Nombres(Base):
     def test_un_solo_nombre_por_equipo(self):
         a, b, c = self.pub(id="a"), self.pub(id="b"), self.pub(id="c")

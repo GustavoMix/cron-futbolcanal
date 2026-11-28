@@ -177,6 +177,11 @@ tablas y resultados que ya se habían leído antes de este soporte se releen una
 **Clasificación:** cada publicación trae `ia_clase`: resultado, fixture, transmision, noticia,
 promocion u otro. Un solo pedido por corrida para hasta 40 publicaciones (`clasificar_ia.py`).
 
+**Alineaciones:** los afiches de "onceno inicial" se leen y quedan dentro del partido, en
+`alineacion` (`dt_local`, `dt_visitante`, `jugadores_local`, `jugadores_visitante`, cada jugador
+con `numero`, `nombre` y `rol`: capitan, arquero o vacío). Se pegan al partido de ese día; si
+no había uno anunciado, se crea. Una alineación con menos de 5 jugadores por lado se descarta.
+
 Cada imagen se analiza una sola vez. En `paginas.json`, `ia` fija el modelo, cuántos días
 hacia atrás se miran y cuántas imágenes como máximo por corrida. Si se agota el cupo gratuito,
 lo pendiente se lee en otra corrida. En el plan gratuito Google puede usar lo que se le envía.
